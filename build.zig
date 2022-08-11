@@ -12,20 +12,19 @@ pub fn build(b: *std.build.Builder) void {
     const example = b.addExecutable("zhc-example", "example/main.zig");
     example.setBuildMode(mode);
     example.setTarget(host_target);
-    example.addPackage(zhc.build.configure(b, "src/zhc.zig", .host));
+    example.addPackage(zhc.build.getHostPkg(b));
     example.install();
+
+    const example_configs = zhc.build.extractKernelConfigs(b, example);
 
     const example_devlib = zhc.build.addDeviceLib(
         b,
         "example/kernel.zig",
-        "src/zhc.zig",
         device_target,
+        example_configs,
     );
     example_devlib.setBuildMode(mode);
     b.default_step.dependOn(&example_devlib.step);
-
-    const example_kcx = zhc.build.KernelConfigExtractStep.create(b, example.getOutputSource());
-    b.default_step.dependOn(&example_kcx.step);
 
     const tests = b.addTest("src/zhc.zig");
     tests.setBuildMode(mode);

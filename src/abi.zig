@@ -182,34 +182,23 @@ pub const AbiValue = union(enum) {
                 try writer.print("{c}{c}{}", .{size, constness, info.alignment});
                 try info.child.mangle(writer);
             },
-            .constant_int => |value| try mangleConstantInt(writer, value),
+            .constant_int => |value| {
+                // Write it out in hex, so that we don't need to have any additional memory.
+                try writer.writeByte('I');
+                try writeBigIntAsHex(writer, value);
+                const sign: u8 = switch (value.positive) {
+                    true => 'p',
+                    false => 'n',
+                };
+                // Use the sign as a terminator for the value.
+                try writer.writeByte(sign);
+            },
             .constant_bool => |value| try writer.writeByte(if (value) 'T' else 'F'),
             .typed_runtime_value => |child| {
                 try writer.writeByte('r');
                 try child.mangle(writer);
             },
         }
-    }
-
-    fn mangleConstantInt(writer: anytype, value: BigInt) !void {
-        // Write it out in hex, so that we don't need to have any additional memory.
-        try writer.writeByte('I');
-        const digits_per_limb = @sizeOf(BigIntLimb) * constant_int_hex_digits_per_limb_byte;
-        const limb_padded_fmt = comptime std.fmt.comptimePrint("{{X:0>{}}}", .{digits_per_limb});
-
-        var i: usize = value.limbs.len - 1;
-        // Don't need to pad the first limb.
-        try writer.print("{X}", .{value.limbs[i]});
-        while (i > 0) {
-            i -= 1;
-            try writer.print(limb_padded_fmt, .{value.limbs[i]});
-        }
-        const sign: u8 = switch (value.positive) {
-            true => 'p',
-            false => 'n',
-        };
-        // Use the sign as a terminator for the value.
-        try writer.writeByte(sign);
     }
 
     pub const DemangleError = error {
@@ -231,7 +220,7 @@ pub const AbiValue = union(enum) {
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,
-    ) !void {
+    ) @TypeOf(writer).Error!void {
         switch (self) {
             .int, .float => try self.mangle(writer),
             .bool => try writer.writeAll("bool"),
@@ -264,7 +253,60 @@ pub const AbiValue = union(enum) {
             .typed_runtime_value => |ty| try writer.print("(runtime value of type {})", .{ty}),
         }
     }
+
+    pub fn toStaticInitializer(self: AbiValue, writer: anytype) @TypeOf(writer).Error!void {
+        switch (self) {
+            .int => |info| try writer.print(".{{.int = .{{.signedness = .{s}, .bits = {}}}}}", .{ @tagName(info.signedness), info.bits }),
+            .float => |info| try writer.print(".{{.float = .{{.bits = {}}}}}", .{info.bits}),
+            .bool => try writer.writeAll(".bool"),
+            .array => |info| {
+                try writer.print(".{{.array = .{{.len = {}, .child = &", .{info.len});
+                try info.child.toStaticInitializer(writer);
+                try writer.writeAll("}}");
+            },
+            .pointer => |info| {
+                try writer.print(".{{.pointer = .{{.size = .{s}, .is_const = {}, .alignment = {}, .child = &", .{
+                    @tagName(info.size),
+                    info.is_const,
+                    info.alignment,
+                });
+
+                try info.child.toStaticInitializer(writer);
+                try writer.writeAll("}}");
+            },
+            .constant_int => |value| {
+                try writer.writeAll(".{.constant_int = ");
+                if (!value.positive) {
+                    try writer.writeByte('-');
+                }
+                try writer.writeAll("0x");
+                try writeBigIntAsHex(writer, value);
+                try writer.writeByte('}');
+            },
+            .constant_bool => |value| {
+                try writer.print(".{{.constant_bool = {}}}", .{value});
+            },
+            .typed_runtime_value => |child| {
+                try writer.writeAll(".{.typed_runtime_value = &");
+                try child.toStaticInitializer(writer);
+                try writer.writeByte('}');
+            },
+        }
+    }
 };
+
+fn writeBigIntAsHex(writer: anytype, value: BigInt) !void {
+    const digits_per_limb = @sizeOf(BigIntLimb) * constant_int_hex_digits_per_limb_byte;
+    const limb_padded_fmt = comptime std.fmt.comptimePrint("{{X:0>{}}}", .{digits_per_limb});
+
+    var i: usize = value.limbs.len - 1;
+    // Don't need to pad the first limb.
+    try writer.print("{X}", .{value.limbs[i]});
+    while (i > 0) {
+        i -= 1;
+        try writer.print(limb_padded_fmt, .{value.limbs[i]});
+    }
+}
 
 const Parser = struct {
     input: []const u8,
@@ -378,8 +420,8 @@ const Parser = struct {
             arg.* = try p.demangleAbiValue();
         }
         return KernelConfig{
-            .kernel = .{.name = name},
-            .args = args,
+            .kernel = .{.name = try p.arena.dupe(u8, name)},
+            .overload = .{.args = args},
         };
     }
 
@@ -496,15 +538,13 @@ test "AbiValue - demangle" {
     try testDemangle(.{.constant_bool = false}, "F");
 }
 
-/// Representation of an instance of a kernel.
-pub const KernelConfig = struct {
-    /// The kernel to which this configuration applies (the "launched" kernel).
-    kernel: Kernel,
-    /// Arguments with which it is launched. Note, this only contains the comptime-known
-    /// parts. See `AbiValue`.
+/// Representation of a set of arguments passed to a kernel.
+pub const Overload = struct {
     args: []const AbiValue,
 
-    pub fn initFromArgs(kernel: Kernel, comptime Args: type) KernelConfig {
+    pub const Map = std.StringArrayHashMapUnmanaged([]const Overload);
+
+    pub fn init(comptime Args: type) Overload {
         const args_info = @typeInfo(Args);
         if (args_info != .Struct or !args_info.Struct.is_tuple) {
             @compileError("expected tuple, found " ++ @typeName(Args));
@@ -529,10 +569,7 @@ pub const KernelConfig = struct {
             }
         }
 
-        return KernelConfig {
-            .kernel = kernel,
-            .args = &abi_args,
-        };
+        return .{.args = &abi_args};
     }
 
     fn valueToAbiValue(comptime T: type, comptime value: T) AbiValue {
@@ -589,13 +626,57 @@ pub const KernelConfig = struct {
         };
     }
 
+    /// Prints a debug representation of the Overload.
+    pub fn format(
+        self: Overload,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        for (self.args) |arg, i| {
+            if (i != 0)
+                try writer.writeAll(", ");
+            try writer.print("{}", .{arg});
+        }
+    }
+
+    pub fn toStaticInitializer(self: Overload, writer: anytype) !void {
+        try writer.writeAll(".{.args = &.{");
+        for (self.args) |arg, i| {
+            if (i != 0) {
+                try writer.writeAll(", ");
+            }
+            try arg.toStaticInitializer(writer);
+        }
+        try writer.writeAll("}}");
+    }
+};
+
+/// Representation of an instance of a kernel.
+pub const KernelConfig = struct {
+    /// The kernel to which this configuration applies (the "launched" kernel).
+    kernel: Kernel,
+    /// Arguments with which it is launched. Note, this only contains the comptime-known
+    /// parts. See `AbiValue`.
+    overload: Overload,
+
+    pub fn init(kernel: Kernel, comptime Args: type) KernelConfig {
+
+        return KernelConfig {
+            .kernel = kernel,
+            .overload = Overload.init(Args),
+        };
+    }
+
     pub fn mangle(self: KernelConfig, writer: anytype) !void {
         try writer.print("{}_{s}{}", .{
             self.kernel.name.len,
             self.kernel.name,
-            self.args.len,
+            self.overload.args.len,
         });
-        for (self.args) |arg| {
+        for (self.overload.args) |arg| {
             try arg.mangle(writer);
         }
     }
@@ -617,13 +698,7 @@ pub const KernelConfig = struct {
     ) !void {
         _ = fmt;
         _ = options;
-        try writer.print("{s}(", .{self.kernel.name});
-        for (self.args) |arg, i| {
-            if (i != 0)
-                try writer.writeAll(", ");
-            try writer.print("{}", .{arg});
-        }
-        try writer.writeByte(')');
+        try writer.print("{s}({}}", .{self.kernel.name, self.overload});
     }
 };
 
@@ -641,6 +716,6 @@ fn mangleKernelConfigFormatter(
 const MangleKernelConfigFormatter = std.fmt.Formatter(mangleKernelConfigFormatter);
 
 pub fn mangleKernelArrayName(comptime k: Kernel, comptime Args: type) []const u8 {
-    const config = KernelConfig.initFromArgs(k, Args);
+    const config = KernelConfig.init(k, Args);
     return std.fmt.comptimePrint("{s}{}", .{kernel_array_sym_prefix, MangleKernelConfigFormatter{.data = config}});
 }

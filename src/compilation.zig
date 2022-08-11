@@ -1,6 +1,8 @@
 //! This file contains some information and helpers related to the current
 //! compilation.
 
+const std = @import("std");
+
 const zhc = @import("zhc.zig");
 const build_options = @import("zhc_build_options");
 const builtin = @import("builtin");
@@ -20,6 +22,20 @@ pub const Side = enum {
 
 /// The side code is currently being compiled for.
 pub const side: Side = build_options.side;
+
+/// The configurions of kernels to launch.
+pub const launch_configurations = blk: {
+    deviceOnly();
+    // For debugging purposes, just check if all the configurations are generated
+    // correctly here.
+    const configs = build_options.launch_configurations;
+    inline for (std.meta.declarations(configs)) |decl| {
+        const config: []const zhc.abi.Overload = @field(configs, decl.name);
+        _ = config;
+    }
+
+    break :blk configs;
+};
 
 /// The architecture of the device currently being compiled for.
 /// Here to work around a stage 2 compiler issue.

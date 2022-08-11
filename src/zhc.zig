@@ -23,7 +23,18 @@ pub fn kernel(name: []const u8) Kernel {
 
 pub fn declareKernel(comptime k: Kernel, comptime func: anytype) void {
     compilation.deviceOnly();
-    @export(func, .{.name = abi.kernel_declaration_sym_prefix ++ k.name});
+    const launch_configurations = compilation.launch_configurations;
+    if (!@hasDecl(launch_configurations, k.name)) {
+        // User did not request this kernel to be exported, so just ignore it.
+        return;
+    }
+    const overloads: []const abi.Overload = @field(launch_configurations, k.name);
+
+    @compileLog(overloads.len);
+
+    _ = func;
+    _ = overloads;
+    // @export(func, .{.name = abi.kernel_declaration_sym_prefix ++ k.name});
 }
 
 pub fn launch(comptime k: Kernel, args: anytype) void {
