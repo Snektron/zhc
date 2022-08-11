@@ -4,7 +4,8 @@
 const std = @import("std");
 const zhc = @import("zhc.zig");
 
-const elf = std.elf;
+pub const elf = @import("build/elf.zig");
+
 const CrossTarget = std.zig.CrossTarget;
 const native_endian = @import("builtin").target.cpu.arch.endian();
 
@@ -122,74 +123,14 @@ pub const KernelConfigExtractStep = struct {
             object_path,
             std.math.maxInt(usize),
             1 * 1024 * 1024,
-            @alignOf(elf.Elf64_Ehdr),
+            @alignOf(std.elf.Elf64_Ehdr),
             null,
         );
-        const header = try elf.Header.parse(elf_bytes[0..@sizeOf(elf.Elf64_Ehdr)]);
 
-        switch (header.is_64) {
-            true => switch (header.endian) {
-                .Big => try parseElf(header, elf_bytes, true, .Big),
-                .Little => try parseElf(header, elf_bytes, true, .Little),
-            },
-            false => switch (header.endian) {
-                .Big => try parseElf(header, elf_bytes, false, .Big),
-                .Little => try parseElf(header, elf_bytes, false, .Little),
-            },
-        }
-    }
-
-    fn parseElf(
-        header: elf.Header,
-        elf_bytes: []const u8,
-        comptime is_64: bool,
-        comptime endian: std.builtin.Endian,
-    ) !void {
-        const Sym = if (is_64) elf.Elf64_Sym else elf.Elf32_Sym;
-        const Shdr = if (is_64) elf.Elf64_Shdr else elf.Elf32_Shdr;
-        const S = struct {
-            fn endianSwap(x: anytype) @TypeOf(x) {
-                if (endian != native_endian) {
-                    return @byteSwap(@TypeOf(x), x);
-                } else {
-                    return x;
-                }
-            }
-            fn symbolAddrLessThan(_: void, lhs: Sym, rhs: Sym) bool {
-                return endianSwap(lhs.st_value) < endianSwap(rhs.st_value);
-            }
-        };
-        // A little helper to do endian swapping.
-        const s = S.endianSwap;
-
-        const shdrs = std.mem.bytesAsSlice(Shdr, elf_bytes[header.shoff..])[0..header.shnum];
-        const shstrtab_offset = s(shdrs[header.shstrndx].sh_offset);
-        const shstrtab = elf_bytes[shstrtab_offset..];
-
-        // Find offsets of the .symtab table.
-        const symtab_index = for (shdrs) |shdr, i| {
-            const sh_name = std.mem.sliceTo(shstrtab[s(shdr.sh_name)..], 0);
-            if (std.mem.eql(u8, sh_name, ".symtab")) {
-                break @intCast(u16, i);
-            }
-        } else {
-            std.log.err("object has no .symtab section", .{});
-            return error.NoSymtab;
-        };
-
-        const strtab_offset = s(shdrs[s(shdrs[symtab_index].sh_link)].sh_offset);
-        const strtab = elf_bytes[strtab_offset..];
-
-        const syms_off = s(shdrs[symtab_index].sh_offset);
-        const syms_size = s(shdrs[symtab_index].sh_size);
-        const syms = std.mem.bytesAsSlice(Sym, elf_bytes[syms_off..][0..syms_size]);
-
-        for (syms) |sym| {
-            const name = std.mem.sliceTo(strtab[s(sym.st_name)..], 0);
-            if (!std.mem.startsWith(u8, name, zhc.abi.kernel_array_sym_prefix)) {
-                continue;
-            }
-            std.debug.print("kernel configuration: {s}\n", .{name});
+        const configs = try elf.parseKernelConfigs(self.b.allocator, elf_bytes);
+        std.log.info("Found {} configs:", .{configs.len});
+        for (configs) |cfg| {
+            std.log.info("{}", .{cfg});
         }
     }
 };

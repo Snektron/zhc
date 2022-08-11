@@ -220,6 +220,39 @@ pub const AbiValue = union(enum) {
         };
         return p.demangle();
     }
+
+    /// Prints a debug representation of the AbiValue.
+    pub fn format(
+        self: AbiValue,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self) {
+            .int, .float => try self.mangle(writer),
+            .bool => try writer.writeAll("bool"),
+            .array => |info| {
+                try writer.print("[{}]", .{info.len});
+                try info.child.format(fmt, options, writer);
+            },
+            .pointer => |info| {
+                switch (info.size) {
+                    .one => try writer.writeAll("*"),
+                    .many => try writer.writeAll("[*]"),
+                    .slice => try writer.writeAll("[]"),
+                }
+
+                if (info.is_const) {
+                    try writer.writeAll("const ");
+                }
+
+                try writer.print("align({}) ", .{info.alignment});
+                try info.child.format(fmt, options, writer);
+            },
+            .constant_int => |value| try writer.print("{}", .{value}),
+            .typed_runtime_value => |ty| try writer.print("(runtime value of type {})", .{ty}),
+        }
+    }
 };
 
 const Parser = struct {
@@ -240,7 +273,7 @@ const Parser = struct {
     }
 
     fn expect(p: *Parser, expected: u8) !void {
-        const actual = p.next() orelse return false;
+        const actual = try p.next();
         if (actual != expected)
             return error.InvalidMangledName;
     }
@@ -325,17 +358,16 @@ const Parser = struct {
     }
 
     fn demangleKernelConfig(p: *Parser) !KernelConfig {
-        var config: KernelConfig = undefined;
-        config.kernel = .{
-            .name = try p.parseName(),
-        };
-        try p.eat('_');
+        const name = try p.parseName();
         const num_args = try p.parseDecimal(usize);
-        config.args = try p.arena.alloc(AbiValue, num_args);
-        for (config.arg) |*arg| {
-            try p.eat('_');
+        const args = try p.arena.alloc(AbiValue, num_args);
+        for (args) |*arg| {
             arg.* = try p.demangleAbiValue();
         }
+        return KernelConfig{
+            .kernel = .{.name = name},
+            .args = args,
+        };
     }
 
     fn demangleConstantInt(p: *Parser) !BigInt {
@@ -466,7 +498,7 @@ pub const KernelConfig = struct {
             @compileError("too many arguments in kernel call");
         }
 
-        // TODO: Validate abi type
+        // TODO: Validate these.
         comptime var abi_args: [fields.len]AbiValue = undefined;
         inline for (fields) |field, i| {
             if (field.is_comptime and field.default_value != null) {
@@ -550,12 +582,30 @@ pub const KernelConfig = struct {
         }
     }
 
-    pub fn demangle(arena: Allocator, input: []const u8) KernelConfig {
+    pub fn demangle(arena: Allocator, input: []const u8) !KernelConfig {
         var p = Parser{
             .input = input,
             .arena = arena,
         };
         return try p.demangleKernelConfig();
+    }
+
+    /// Prints a debug representation of the KernelConfig.
+    pub fn format(
+        self: KernelConfig,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("{s}(", .{self.kernel.name});
+        for (self.args) |arg, i| {
+            if (i != 0)
+                try writer.writeAll(", ");
+            try writer.print("{}", .{arg});
+        }
+        try writer.writeByte(')');
     }
 };
 
