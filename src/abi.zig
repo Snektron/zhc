@@ -52,12 +52,14 @@ pub const AbiValue = union(enum) {
     /// A comptime known integer value. While the host version of this value may have
     /// a type (like `@as(u64, 123)`), all are treated as `comptime_int` here.
     constant_int: BigInt,
+    /// A comptime known boolean value.
+    constant_bool: bool,
 
     /// A runtime-value, which has this type.
     /// The child must be a type.
     typed_runtime_value: *const AbiValue,
 
-    // TODO: More compile-time values. Floats, bools, arrays,
+    // TODO: More compile-time values. Floats, arrays,
     //   instances of user-defined types, etc.
     // TODO: More compile-time types. These may take pretty much any form. Even device-
     //   incompatible types are fine, as long as the user doesn't instantiate them...
@@ -130,6 +132,7 @@ pub const AbiValue = union(enum) {
                 return eql(a_info.child.*, b_info.child.*);
             },
             .constant_int => a.constant_int.eq(b.constant_int),
+            .constant_bool => a.constant_bool == b.constant_bool,
             .typed_runtime_value => a.typed_runtime_value.eql(b.typed_runtime_value.*),
         };
     }
@@ -180,6 +183,7 @@ pub const AbiValue = union(enum) {
                 try info.child.mangle(writer);
             },
             .constant_int => |value| try mangleConstantInt(writer, value),
+            .constant_bool => |value| try writer.writeByte(if (value) 'T' else 'F'),
             .typed_runtime_value => |child| {
                 try writer.writeByte('r');
                 try child.mangle(writer);
@@ -250,6 +254,13 @@ pub const AbiValue = union(enum) {
                 try info.child.format(fmt, options, writer);
             },
             .constant_int => |value| try writer.print("{}", .{value}),
+            .constant_bool => |value| {
+                if (value) {
+                    try writer.writeAll("true");
+                } else {
+                    try writer.writeAll("false");
+                }
+            },
             .typed_runtime_value => |ty| try writer.print("(runtime value of type {})", .{ty}),
         }
     }
@@ -348,6 +359,8 @@ const Parser = struct {
                 };
             },
             'I' => return AbiValue{.constant_int = try p.demangleConstantInt()},
+            'T' => return AbiValue{.constant_bool = true},
+            'F' => return AbiValue{.constant_bool = false},
             'r' => {
                 const child = try p.arena.create(AbiValue);
                 child.* = try p.demangleAbiValue();
@@ -443,6 +456,8 @@ test "AbiValue - mangle" {
     try testMangleInt("I111122223333444455556666777n", -0x111122223333444455556666777);
     try testMangleInt("I0p", 0x0);
     try testMangleInt("I10000000000000000p", 0x10000000000000000);
+
+    try testMangle("T", .{.constant_bool = true});
 }
 
 fn testDemangle(expected: AbiValue, mangled: []const u8) !void {
@@ -477,6 +492,8 @@ test "AbiValue - demangle" {
     try testDemangleInt(0x11223344, "I11223344p");
     try testDemangleInt(-0xAAAABBBBCCCCDDDDEEEEF, "IAAAABBBBCCCCDDDDEEEEFn");
     try testDemangleInt(0x0, "I00000000000000000000000000000n");
+
+    try testDemangle(.{.constant_bool = false}, "F");
 }
 
 /// Representation of an instance of a kernel.
@@ -527,6 +544,7 @@ pub const KernelConfig = struct {
                 const big_int = BigIntMut.init(&limbs, value).toConst();
                 break :blk .{.constant_int = big_int};
             },
+            .Bool => .{.constant_bool = value},
             else => @compileError("unsupported zhc abi value of type " ++ @typeName(T)),
         };
     }
