@@ -28,8 +28,10 @@ pub fn declareKernel(comptime k: Kernel, comptime func: anytype) void {
 
 pub fn launch(comptime k: Kernel, args: anytype) void {
     compilation.hostOnly();
+    const Args = @TypeOf(args);
+    const name = comptime abi.mangleKernelArrayName(k, Args);
     const kernel_fn_ptr = @extern(*const fn() void, .{
-        .name = abi.mangleKernelArrayName(k.name, @TypeOf(args)),
+        .name = name,
         .linkage = .Weak,
     });
     (kernel_fn_ptr.?)();

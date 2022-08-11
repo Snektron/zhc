@@ -4,6 +4,8 @@
 const std = @import("std");
 const zhc = @import("zhc.zig");
 
+const Kernel = zhc.Kernel;
+
 const Allocator = std.mem.Allocator;
 const BigInt = std.math.big.int.Const;
 const BigIntMut = std.math.big.int.Mutable;
@@ -13,6 +15,8 @@ const BigIntLimb = std.math.big.Limb;
 pub const kernel_declaration_sym_prefix = "__zhc_kd_";
 /// "Kernel array" symbols have this prefix.
 pub const kernel_array_sym_prefix = "__zhc_ka_";
+
+pub const max_kernel_args = 32;
 
 const constant_int_hex_digits_per_limb_byte = 2;
 
@@ -209,7 +213,7 @@ pub const AbiValue = union(enum) {
         OutOfMemory,
     };
 
-    pub fn demangle(input: []const u8, arena: Allocator) DemangleError!AbiValue {
+    pub fn demangle(arena: Allocator, input: []const u8) DemangleError!AbiValue {
         var p = Parser{
             .input = input,
             .arena = arena,
@@ -235,6 +239,12 @@ const Parser = struct {
         return c;
     }
 
+    fn expect(p: *Parser, expected: u8) !void {
+        const actual = p.next() orelse return false;
+        if (actual != expected)
+            return error.InvalidMangledName;
+    }
+
     fn parseDecimal(p: *Parser, comptime T: type) !T {
         const len = for (p.input[p.offset..]) |c, i| {
             if (!std.ascii.isDigit(c))
@@ -250,7 +260,18 @@ const Parser = struct {
         return std.fmt.parseInt(T, decimal, 10) catch error.InvalidMangledName;
     }
 
-    fn demangle(p: *Parser) AbiValue.DemangleError!AbiValue {
+    fn parseName(p: *Parser) ![]const u8 {
+        const len = try p.parseDecimal(usize);
+        try p.expect('_');
+        const end = p.offset + len;
+        if (len == 0 or end > p.input.len)
+            return error.InvalidMangledName;
+        const name = p.input[p.offset..end];
+        p.offset = end;
+        return name;
+    }
+
+    fn demangleAbiValue(p: *Parser) AbiValue.DemangleError!AbiValue {
         const type_byte = try p.next();
         switch (type_byte) {
             'i', 'u', 'f' => {
@@ -266,7 +287,7 @@ const Parser = struct {
             'a' => {
                 const len = try p.parseDecimal(u64);
                 const child = try p.arena.create(AbiValue);
-                child.* = try p.demangle();
+                child.* = try p.demangleAbiValue();
                 return AbiValue{.array = .{.len = len, .child = child}};
             },
             'p', 'P', 'S' => {
@@ -283,7 +304,7 @@ const Parser = struct {
                 };
                 const alignment = try p.parseDecimal(u16);
                 const child = try p.arena.create(AbiValue);
-                child.* = try p.demangle();
+                child.* = try p.demangleAbiValue();
                 return AbiValue{
                     .pointer = .{
                         .size = size,
@@ -296,10 +317,24 @@ const Parser = struct {
             'I' => return AbiValue{.constant_int = try p.demangleConstantInt()},
             'r' => {
                 const child = try p.arena.create(AbiValue);
-                child.* = try p.demangle();
+                child.* = try p.demangleAbiValue();
                 return AbiValue{.typed_runtime_value = child};
             },
             else => return error.InvalidMangledName,
+        }
+    }
+
+    fn demangleKernelConfig(p: *Parser) !KernelConfig {
+        var config: KernelConfig = undefined;
+        config.kernel = .{
+            .name = try p.parseName(),
+        };
+        try p.eat('_');
+        const num_args = try p.parseDecimal(usize);
+        config.args = try p.arena.alloc(AbiValue, num_args);
+        for (config.arg) |*arg| {
+            try p.eat('_');
+            arg.* = try p.demangleAbiValue();
         }
     }
 
@@ -385,7 +420,7 @@ fn testDemangle(expected: AbiValue, mangled: []const u8) !void {
         .input = mangled,
         .arena = arena.allocator(),
     };
-    const actual = try p.demangle();
+    const actual = try p.demangleAbiValue();
     try std.testing.expectEqual(mangled.len, p.offset);
     try std.testing.expect(AbiValue.eql(expected, actual));
 }
@@ -412,7 +447,132 @@ test "AbiValue - demangle" {
     try testDemangleInt(0x0, "I00000000000000000000000000000n");
 }
 
-pub fn mangleKernelArrayName(comptime name: []const u8, comptime Args: type) []const u8 {
-    _ = Args;
-    return kernel_array_sym_prefix ++ name;
+/// Representation of an instance of a kernel.
+pub const KernelConfig = struct {
+    /// The kernel to which this configuration applies (the "launched" kernel).
+    kernel: Kernel,
+    /// Arguments with which it is launched. Note, this only contains the comptime-known
+    /// parts. See `AbiValue`.
+    args: []const AbiValue,
+
+    pub fn initFromArgs(kernel: Kernel, comptime Args: type) KernelConfig {
+        const args_info = @typeInfo(Args);
+        if (args_info != .Struct or !args_info.Struct.is_tuple) {
+            @compileError("expected tuple, found " ++ @typeName(Args));
+        }
+
+        const fields = args_info.Struct.fields;
+        if (fields.len > max_kernel_args) {
+            @compileError("too many arguments in kernel call");
+        }
+
+        // TODO: Validate abi type
+        comptime var abi_args: [fields.len]AbiValue = undefined;
+        inline for (fields) |field, i| {
+            if (field.is_comptime and field.default_value != null) {
+                const value = @ptrCast(*const field.field_type, field.default_value.?).*;
+                abi_args[i] = valueToAbiValue(field.field_type, value);
+            } else {
+                const runtime_value_type = typeToAbiValue(field.field_type);
+                abi_args[i] = .{
+                    .typed_runtime_value = &runtime_value_type,
+                };
+            }
+        }
+
+        return KernelConfig {
+            .kernel = kernel,
+            .args = &abi_args,
+        };
+    }
+
+    fn valueToAbiValue(comptime T: type, comptime value: T) AbiValue {
+        return switch (@typeInfo(T)) {
+            .Type => typeToAbiValue(value),
+            .Int, .ComptimeInt => blk: {
+                const num_limbs = std.math.big.int.calcLimbLen(value);
+                var limbs: [num_limbs]BigIntLimb = undefined;
+                const big_int = BigIntMut.init(&limbs, value).toConst();
+                break :blk .{.constant_int = big_int};
+            },
+            else => @compileError("unsupported zhc abi value of type " ++ @typeName(T)),
+        };
+    }
+
+    fn typeToAbiValue(comptime T: type) AbiValue {
+        return switch (@typeInfo(T)) {
+            .Int => |info| .{.int = .{
+                .signedness = info.signedness,
+                .bits = info.bits,
+            }},
+            .Float => |info| .{.float = .{.bits = info.bits}},
+            .Bool => .bool,
+            .Array => |info| blk: {
+                if (info.sentinel != 0) {
+                    @compileError("unsupported zhc abi type " ++ @typeName(T));
+                }
+                const child = typeToAbiValue(info.child);
+                break :blk .{.array = .{
+                     .len = info.len,
+                     .child = &child,
+                }};
+            },
+            .Pointer => |info| blk: {
+                if (info.is_volatile or info.is_allowzero or info.sentinel != null) {
+                    @compileError("unsupported zhc abi type " ++ @typeName(T));
+                }
+
+                const child = typeToAbiValue(info.child);
+                break :blk .{.pointer = .{
+                    .is_const = info.is_const,
+                    .alignment = info.alignment,
+                    .size = switch (info.size) {
+                        .One => .one,
+                        .Many => .many,
+                        .Slice => .slice,
+                        .C => @compileError("unsupported zhc abi type " ++ @typeName(T)),
+                    },
+                    .child = &child,
+                }};
+            },
+            else => @compileError("unsupported zhc abi type " ++ @typeName(T)),
+        };
+    }
+
+    pub fn mangle(self: KernelConfig, writer: anytype) !void {
+        try writer.print("{}_{s}{}", .{
+            self.kernel.name.len,
+            self.kernel.name,
+            self.args.len,
+        });
+        for (self.args) |arg| {
+            try arg.mangle(writer);
+        }
+    }
+
+    pub fn demangle(arena: Allocator, input: []const u8) KernelConfig {
+        var p = Parser{
+            .input = input,
+            .arena = arena,
+        };
+        return try p.demangleKernelConfig();
+    }
+};
+
+fn mangleKernelConfigFormatter(
+    config: KernelConfig,
+    comptime fmt: []const u8,
+    options: std.fmt.FormatOptions,
+    writer: anytype,
+) !void {
+    _ = fmt;
+    _ = options;
+    try config.mangle(writer);
+}
+
+const MangleKernelConfigFormatter = std.fmt.Formatter(mangleKernelConfigFormatter);
+
+pub fn mangleKernelArrayName(comptime k: Kernel, comptime Args: type) []const u8 {
+    const config = KernelConfig.initFromArgs(k, Args);
+    return std.fmt.comptimePrint("{s}{}", .{kernel_array_sym_prefix, MangleKernelConfigFormatter{.data = config}});
 }
