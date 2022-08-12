@@ -154,6 +154,44 @@ pub const AbiValue = union(enum) {
         };
     }
 
+    /// Return a Type version of this AbiValue. Asserts that it represents a type.
+    pub fn ToType(comptime self: AbiValue) type {
+        return switch (self) {
+            .int => |info| @Type(.{.Int = .{.signedness = info.signedness, .bits = info.bits}}),
+            .float => |info| @Type(.{.Float = .{.bits = info.bits}}),
+            .bool => bool,
+            .array => |info| [info.len]info.child.ToType(),
+            .pointer => |info| @Type(.{.Pointer = .{
+                .size = switch (info.size) {
+                    .one => .One,
+                    .many => .Many,
+                    .slice => .Slice,
+                },
+                .is_volatile = false,
+                .is_const = info.is_const,
+                .alignment = info.alignment,
+                // TODO: device kernels could require special address spaces here.
+                .address_space = .generic,
+                .child = info.child.ToType(),
+                .is_allowzero = false,
+                .sentinel = null,
+            }}),
+            else => @compileError("AbiValue is not a type"),
+        };
+    }
+
+    /// Return the ManyPtr representing the pointer part of a slice.
+    /// Asserts that the type is a pointer.
+    pub fn slicePtrType(self: AbiValue) AbiValue {
+        const info = self.pointer;
+        return .{
+            .size = .many,
+            .is_const = info.is_const,
+            .alignment = info.alignment,
+            .child = info.child,
+        };
+    }
+
     pub fn mangle(self: AbiValue, writer: anytype) @TypeOf(writer).Error!void {
         switch (self) {
             .int => |info| {
@@ -718,4 +756,12 @@ const MangleKernelConfigFormatter = std.fmt.Formatter(mangleKernelConfigFormatte
 pub fn mangleKernelArrayName(comptime k: Kernel, comptime Args: type) []const u8 {
     const config = KernelConfig.init(k, Args);
     return std.fmt.comptimePrint("{s}{}", .{kernel_array_sym_prefix, MangleKernelConfigFormatter{.data = config}});
+}
+
+pub fn mangleKernelDefinitionName(comptime k: Kernel, comptime overload: Overload) []const u8 {
+    const config = KernelConfig{
+        .kernel = k,
+        .overload = overload,
+    };
+    return std.fmt.comptimePrint("{s}{}", .{kernel_declaration_sym_prefix, MangleKernelConfigFormatter{.data = config}});
 }
