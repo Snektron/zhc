@@ -18,10 +18,10 @@ pub const kernel_cc = CallingConvention.Inline;
 
 /// The *actual* calling convention that exported kernel functions should have. The proper
 /// value depends on the device architecture and OS.
-pub const real_kernel_cc: CallingConvention = switch (compilation.device_arch) {
+pub const real_kernel_cc: CallingConvention = switch (builtin.cpu.arch) {
     .amdgcn => .AmdgpuKernel,
     .x86_64 => .C,
-    else => @compileError("Unsupported device archtecture " ++ @tagName(compilation.device_arch)),
+    else => @compileError("Unsupported device archtecture " ++ @tagName(builtin.cpu.arch)),
 };
 
 pub const Kernel = struct {

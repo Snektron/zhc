@@ -37,13 +37,6 @@ pub const launch_configurations = blk: {
     break :blk configs;
 };
 
-/// The architecture of the device currently being compiled for.
-/// Here to work around a stage 2 compiler issue.
-pub const device_arch = blk: {
-    deviceOnly();
-    break :blk builtin.stage2_arch;
-};
-
 /// Ensure that the compilation of a scope is at `required_side`.
 /// Produces a compile error otherwise.
 pub inline fn sideOnly(comptime required_side: Side) void {
