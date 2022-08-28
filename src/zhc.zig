@@ -8,12 +8,13 @@ pub const compilation = @import("compilation.zig");
 pub const abi = @import("abi.zig");
 
 /// The calling convention that user-kernels should be declared to have.
+///
 /// Note: This is actually a method to prevent the compiler from analyzing the function
-/// before we actually call it. This allows us to pass around the function, which
-/// has device code, without it accidently being compiled on the host.
-/// This also allows users to more easily spot "entry points" in their code, as opposed
-/// to when the user is just told to put `inline` on the kernel function.
-/// We want to call user kernels with inline from the entry point wrapper anyway.
+///   before we actually call it. This allows us to pass around the function, which
+///   has device code, without it accidently being compiled on the host.
+///   This also allows users to more easily spot "entry points" in their code, as opposed
+///   to when the user is just told to put `inline` on the kernel function.
+///   We want to call user kernels with inline from the entry point wrapper anyway.
 pub const kernel_cc = CallingConvention.Inline;
 
 /// The *actual* calling convention that exported kernel functions should have. The proper
@@ -76,14 +77,14 @@ fn EntryPoint(comptime func: anytype, comptime overload: abi.Overload) type {
                 };
                 i += 1;
 
-                if (info.size == .slice) {
+               if (info.size == .slice) {
                     fields[i] = .{
                         .name = std.fmt.bufPrint(&num_buf, "{d}", .{i}) catch unreachable,
                         // Note: device usize, might be different from host.
                         .field_type = usize,
                         .default_value = null,
                         .is_comptime = false,
-                        .alignemnt = @alignOf(usize),
+                        .alignment = @alignOf(usize),
                     };
                     i += 1;
                 }
@@ -105,15 +106,16 @@ fn EntryPoint(comptime func: anytype, comptime overload: abi.Overload) type {
         /// on the device architecture.
         // TODO: Passing via structs is not always the most efficient, so there
         //   might need to be some way to force it to pass it via registers if
-        //   possible.
+        //   possible, or by manually unrolling the arguments into a naked function.
+        //   LLVM can probably optimize that less well, though.
         pub fn deviceMain(args: Args) callconv(real_kernel_cc) void {
             _ = args;
-            _ = func;
+            func(args.@"0");
         }
 
         // Work around stage 2 limitation where it cant export a struct field yet.
-        pub fn exportIt(comptime k: Kernel) void {
-            const name = comptime abi.mangleKernelDefinitionName(k, overload);
+        pub fn declare(comptime k: Kernel) void {
+            const name = comptime abi.mangling.mangleKernelDefinitionName(k, overload);
             @export(deviceMain, .{.name = name});
         }
     };
@@ -134,14 +136,14 @@ pub fn declareKernel(comptime k: Kernel, comptime func: anytype) void {
     const overloads: []const abi.Overload = @field(launch_configurations, k.name);
 
     for (overloads) |overload| {
-        EntryPoint(func, overload).exportIt(k);
+        EntryPoint(func, overload).declare(k);
     }
 }
 
 pub fn launch(comptime k: Kernel, args: anytype) void {
     compilation.hostOnly();
     const Args = @TypeOf(args);
-    const name = comptime abi.mangleKernelArrayName(k, Args);
+    const name = comptime abi.mangling.mangleKernelArrayName(k, Args);
     const kernel_fn_ptr = @extern(*const fn() void, .{
         .name = name,
         .linkage = .Weak,

@@ -48,11 +48,11 @@ fn KernelConfigParser(comptime is_64: bool, comptime endian: std.builtin.Endian)
 
             for (syms) |sym| {
                 const name = std.mem.sliceTo(strtab[endianFix(sym.st_name)..], 0);
-                if (!std.mem.startsWith(u8, name, zhc.abi.kernel_array_sym_prefix)) {
+                if (!std.mem.startsWith(u8, name, zhc.abi.mangling.kernel_array_sym_prefix)) {
                     continue;
                 }
 
-                const config = try KernelConfig.demangle(arena, name[zhc.abi.kernel_array_sym_prefix.len..]);
+                const config = try KernelConfig.demangle(arena, name[zhc.abi.mangling.kernel_array_sym_prefix.len..]);
                 const entry = try overloads.getOrPut(config.kernel.name);
                 if (!entry.found_existing) {
                     entry.value_ptr.* = .{};
@@ -77,7 +77,7 @@ fn KernelConfigParser(comptime is_64: bool, comptime endian: std.builtin.Endian)
 
         fn endianFix(x: anytype) @TypeOf(x) {
             if (endian != native_endian) {
-                return @byteSwap(@TypeOf(x), x);
+                return @byteSwap(x);
             } else {
                 return x;
             }

@@ -8,7 +8,7 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace) nore
     while (true) {}
 }
 
-fn testKernel(a: *i32) callconv(zhc.kernel_cc) void {
+fn testKernel(a: *addrspace(.global) i32) callconv(zhc.kernel_cc) void {
     zhc.compilation.deviceOnly();
     a.* = 123;
 }
@@ -16,5 +16,7 @@ fn testKernel(a: *i32) callconv(zhc.kernel_cc) void {
 pub const test_kernel = zhc.kernel("testKernel");
 
 comptime {
-    zhc.declareKernel(test_kernel, testKernel);
+    if (zhc.compilation.isDevice()) {
+        zhc.declareKernel(test_kernel, testKernel);
+    }
 }
