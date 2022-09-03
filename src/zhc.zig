@@ -136,7 +136,7 @@ pub fn declareKernel(comptime k: Kernel, comptime func: anytype) void {
     const overloads: []const abi.Overload = @field(launch_configurations, k.name);
 
     for (overloads) |overload| {
-        EntryPoint(func, overload).declare(k);
+        abi.exportEntryPoint(k, func, overload);
     }
 }
 

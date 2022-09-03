@@ -2,9 +2,9 @@
 //! binaries.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zhc = @import("zhc.zig");
 
-const builtin = std.builtin;
 const Allocator = std.mem.Allocator;
 const BigInt = std.math.big.int.Const;
 const BigIntMut = std.math.big.int.Mutable;
@@ -13,6 +13,17 @@ const BigIntLimb = std.math.big.Limb;
 const Kernel = zhc.Kernel;
 
 pub const mangling = @import("abi/mangling.zig");
+pub const amdgpu = @import("abi/amdgpu.zig");
+
+/// Platform-specific ABI functions for the current platform.
+/// TODO: Should this switch be done using the CPU arch? Perhaps a "platform" notion should be
+///   introduced.
+const native = switch (builtin.cpu.arch) {
+    .amdgcn => amdgpu,
+    else => @compileError("Unsupported device archtecture " ++ @tagName(builtin.cpu.arch)),
+};
+
+pub const exportEntryPoint = native.exportEntryPoint;
 
 /// The maximum number of kernel arguments supported (for now).
 pub const max_kernel_args = 32;
@@ -168,7 +179,7 @@ pub const AbiValue = union(enum) {
                 .is_const = info.is_const,
                 .alignment = info.alignment,
                 // TODO: device kernels could require special address spaces here.
-                .address_space = .global,
+                .address_space = .generic,
                 .child = info.child.ToType(),
                 .is_allowzero = false,
                 .sentinel = null,
