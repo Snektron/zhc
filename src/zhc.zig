@@ -30,7 +30,7 @@ pub const Kernel = struct {
 };
 
 pub fn kernel(name: []const u8) Kernel {
-    return .{.name = name};
+    return .{ .name = name };
 }
 
 /// Utility function that generates a struct with an entry point for a particular kernel.
@@ -77,7 +77,7 @@ fn EntryPoint(comptime func: anytype, comptime overload: abi.Overload) type {
                 };
                 i += 1;
 
-               if (info.size == .slice) {
+                if (info.size == .slice) {
                     fields[i] = .{
                         .name = std.fmt.bufPrint(&num_buf, "{d}", .{i}) catch unreachable,
                         // Note: device usize, might be different from host.
@@ -93,12 +93,12 @@ fn EntryPoint(comptime func: anytype, comptime overload: abi.Overload) type {
         }
     }
 
-    const Args = @Type(.{.Struct = .{
+    const Args = @Type(.{ .Struct = .{
         .is_tuple = false,
         .layout = .Extern,
         .decls = &.{},
         .fields = fields[0..i],
-    }});
+    } });
 
     return struct {
         /// The real actual entry point of the kernel. Parameters
@@ -116,7 +116,7 @@ fn EntryPoint(comptime func: anytype, comptime overload: abi.Overload) type {
         // Work around stage 2 limitation where it cant export a struct field yet.
         pub fn declare(comptime k: Kernel) void {
             const name = comptime abi.mangling.mangleKernelDefinitionName(k, overload);
-            @export(deviceMain, .{.name = name});
+            @export(deviceMain, .{ .name = name });
         }
     };
 }
@@ -144,7 +144,7 @@ pub fn launch(comptime k: Kernel, args: anytype) void {
     compilation.hostOnly();
     const Args = @TypeOf(args);
     const name = comptime abi.mangling.mangleKernelArrayName(k, Args);
-    const kernel_fn_ptr = @extern(*const fn() void, .{
+    const kernel_fn_ptr = @extern(*const fn () void, .{
         .name = name,
         .linkage = .Weak,
     });

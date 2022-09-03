@@ -48,12 +48,12 @@ fn RuntimeArgsStruct(comptime overload: Overload) type {
         }
     }
 
-    return @Type(.{.Struct = .{
+    return @Type(.{ .Struct = .{
         .is_tuple = false,
         .layout = .Extern,
         .decls = &.{},
         .fields = fields[0..i],
-    }});
+    } });
 }
 
 fn EntryPoint(comptime func: anytype, comptime overload: Overload) type {
@@ -81,8 +81,7 @@ fn EntryPoint(comptime func: anytype, comptime overload: Overload) type {
         ) void {
             if (overload_index == overload.args.len) {
                 @call( // if you see a compile error here it means your kernel arguments are invalid
-                    .{.modifier = .always_inline}, func, kernel_args
-                );
+                    .{ .modifier = .always_inline }, func, kernel_args);
                 return;
             }
 
@@ -118,15 +117,11 @@ fn EntryPoint(comptime func: anytype, comptime overload: Overload) type {
 
         fn declare(comptime kernel: Kernel) void {
             const name = abi.mangling.mangleKernelDefinitionName(kernel, overload);
-            @export(entryPoint, .{.name = name});
+            @export(entryPoint, .{ .name = name });
         }
     };
 }
 
-pub fn exportEntryPoint(
-    comptime kernel: Kernel,
-    comptime func: anytype,
-    comptime overload: Overload
-) void {
+pub fn exportEntryPoint(comptime kernel: Kernel, comptime func: anytype, comptime overload: Overload) void {
     EntryPoint(func, overload).declare(kernel);
 }

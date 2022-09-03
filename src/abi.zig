@@ -165,25 +165,27 @@ pub const AbiValue = union(enum) {
     /// Return a Type version of this AbiValue. Asserts that it represents a type.
     pub fn ToType(comptime self: AbiValue) type {
         return switch (self) {
-            .int => |info| @Type(.{.Int = .{.signedness = info.signedness, .bits = info.bits}}),
-            .float => |info| @Type(.{.Float = .{.bits = info.bits}}),
+            .int => |info| @Type(.{ .Int = .{ .signedness = info.signedness, .bits = info.bits } }),
+            .float => |info| @Type(.{ .Float = .{ .bits = info.bits } }),
             .bool => bool,
             .array => |info| [info.len]info.child.ToType(),
-            .pointer => |info| @Type(.{.Pointer = .{
-                .size = switch (info.size) {
-                    .one => .One,
-                    .many => .Many,
-                    .slice => .Slice,
+            .pointer => |info| @Type(.{
+                .Pointer = .{
+                    .size = switch (info.size) {
+                        .one => .One,
+                        .many => .Many,
+                        .slice => .Slice,
+                    },
+                    .is_volatile = false,
+                    .is_const = info.is_const,
+                    .alignment = info.alignment,
+                    // TODO: device kernels could require special address spaces here.
+                    .address_space = .generic,
+                    .child = info.child.ToType(),
+                    .is_allowzero = false,
+                    .sentinel = null,
                 },
-                .is_volatile = false,
-                .is_const = info.is_const,
-                .alignment = info.alignment,
-                // TODO: device kernels could require special address spaces here.
-                .address_space = .generic,
-                .child = info.child.ToType(),
-                .is_allowzero = false,
-                .sentinel = null,
-            }}),
+            }),
             else => @compileError("AbiValue is not a type"),
         };
     }
@@ -315,7 +317,7 @@ pub const Overload = struct {
             }
         }
 
-        return .{.args = &abi_args};
+        return .{ .args = &abi_args };
     }
 
     fn valueToAbiValue(comptime T: type, comptime value: T) AbiValue {
@@ -325,30 +327,30 @@ pub const Overload = struct {
                 const num_limbs = std.math.big.int.calcLimbLen(value);
                 var limbs: [num_limbs]BigIntLimb = undefined;
                 const big_int = BigIntMut.init(&limbs, value).toConst();
-                break :blk .{.constant_int = big_int};
+                break :blk .{ .constant_int = big_int };
             },
-            .Bool => .{.constant_bool = value},
+            .Bool => .{ .constant_bool = value },
             else => @compileError("unsupported zhc abi value of type " ++ @typeName(T)),
         };
     }
 
     fn typeToAbiValue(comptime T: type) AbiValue {
         return switch (@typeInfo(T)) {
-            .Int => |info| .{.int = .{
+            .Int => |info| .{ .int = .{
                 .signedness = info.signedness,
                 .bits = info.bits,
-            }},
-            .Float => |info| .{.float = .{.bits = info.bits}},
+            } },
+            .Float => |info| .{ .float = .{ .bits = info.bits } },
             .Bool => .bool,
             .Array => |info| blk: {
                 if (info.sentinel != 0) {
                     @compileError("unsupported zhc abi type " ++ @typeName(T));
                 }
                 const child = typeToAbiValue(info.child);
-                break :blk .{.array = .{
-                     .len = info.len,
-                     .child = &child,
-                }};
+                break :blk .{ .array = .{
+                    .len = info.len,
+                    .child = &child,
+                } };
             },
             .Pointer => |info| blk: {
                 if (info.is_volatile or info.is_allowzero or info.sentinel != null) {
@@ -356,7 +358,7 @@ pub const Overload = struct {
                 }
 
                 const child = typeToAbiValue(info.child);
-                break :blk .{.pointer = .{
+                break :blk .{ .pointer = .{
                     .is_const = info.is_const,
                     .alignment = info.alignment,
                     .size = switch (info.size) {
@@ -366,7 +368,7 @@ pub const Overload = struct {
                         .C => @compileError("unsupported zhc abi type " ++ @typeName(T)),
                     },
                     .child = &child,
-                }};
+                } };
             },
             else => @compileError("unsupported zhc abi type " ++ @typeName(T)),
         };
@@ -409,7 +411,7 @@ pub const KernelConfig = struct {
     overload: Overload,
 
     pub fn init(kernel: Kernel, comptime Args: type) KernelConfig {
-        return KernelConfig {
+        return KernelConfig{
             .kernel = kernel,
             .overload = Overload.init(Args),
         };
@@ -427,7 +429,7 @@ pub const KernelConfig = struct {
     ) !void {
         _ = fmt;
         _ = options;
-        try writer.print("{s}({}}", .{self.kernel.name, self.overload});
+        try writer.print("{s}({}}", .{ self.kernel.name, self.overload });
     }
 };
 

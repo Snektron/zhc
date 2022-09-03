@@ -55,7 +55,7 @@ fn configure(
 
     return .{
         .name = zhc_pkg_name,
-        .source = .{.path = zhc_pkg_path},
+        .source = .{ .path = zhc_pkg_path },
         .dependencies = deps,
     };
 }
@@ -106,7 +106,7 @@ const DeviceLibStep = struct {
 };
 
 pub fn addDeviceLib(self: *Builder, root_src: []const u8, device_target: CrossTarget, configs: *KernelConfigExtractStep) *DeviceLibStep {
-    return addDeviceLibSource(self, .{.path = root_src}, device_target, configs);
+    return addDeviceLibSource(self, .{ .path = root_src }, device_target, configs);
 }
 
 pub fn addDeviceLibSource(builder: *Builder, root_src: FileSource, device_target: CrossTarget, configs: *KernelConfigExtractStep) *DeviceLibStep {
@@ -166,7 +166,7 @@ const KernelConfigExtractStep = struct {
             var it = self.configs.iterator();
             while (it.next()) |entry| {
                 for (entry.value_ptr.*) |overload| {
-                    std.log.info("  {s}({})", .{entry.key_ptr.*, overload});
+                    std.log.info("  {s}({})", .{ entry.key_ptr.*, overload });
                 }
             }
         }

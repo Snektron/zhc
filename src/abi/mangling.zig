@@ -22,7 +22,7 @@ pub const kernel_array_sym_prefix = "__zhc_ka_";
 
 const constant_int_hex_digits_per_limb_byte = 2;
 
-pub const DemangleError = error {
+pub const DemangleError = error{
     InvalidMangledName,
     OutOfMemory,
 };
@@ -34,7 +34,7 @@ pub fn mangleAbiValue(value: AbiValue, writer: anytype) @TypeOf(writer).Error!vo
                 .signed => 'i',
                 .unsigned => 'u',
             };
-            try writer.print("{c}{}", .{signedness, info.bits});
+            try writer.print("{c}{}", .{ signedness, info.bits });
         },
         .float => |info| try writer.print("f{}", .{info.bits}),
         .bool => try writer.writeByte('b'),
@@ -52,7 +52,7 @@ pub fn mangleAbiValue(value: AbiValue, writer: anytype) @TypeOf(writer).Error!vo
                 true => 'c',
                 false => 'm',
             };
-            try writer.print("{c}{c}{}", .{size, constness, info.alignment});
+            try writer.print("{c}{c}{}", .{ size, constness, info.alignment });
             try info.child.mangle(writer);
         },
         .constant_int => |int_value| {
@@ -169,18 +169,18 @@ const Parser = struct {
             'i', 'u', 'f' => {
                 const bits = try p.parseDecimal(u16);
                 return switch (type_byte) {
-                    'i' => AbiValue{.int = .{.signedness = .signed, .bits = bits}},
-                    'u' => AbiValue{.int = .{.signedness = .unsigned, .bits = bits}},
-                    'f' => AbiValue{.float = .{.bits = bits}},
+                    'i' => AbiValue{ .int = .{ .signedness = .signed, .bits = bits } },
+                    'u' => AbiValue{ .int = .{ .signedness = .unsigned, .bits = bits } },
+                    'f' => AbiValue{ .float = .{ .bits = bits } },
                     else => unreachable,
                 };
             },
-            'b' => return AbiValue{.bool = {}},
+            'b' => return AbiValue{ .bool = {} },
             'a' => {
                 const len = try p.parseDecimal(u64);
                 const child = try p.arena.create(AbiValue);
                 child.* = try p.demangleAbiValue();
-                return AbiValue{.array = .{.len = len, .child = child}};
+                return AbiValue{ .array = .{ .len = len, .child = child } };
             },
             'p', 'P', 'S' => {
                 const size: AbiValue.PointerType.Size = switch (type_byte) {
@@ -206,13 +206,13 @@ const Parser = struct {
                     },
                 };
             },
-            'I' => return AbiValue{.constant_int = try p.demangleConstantInt()},
-            'T' => return AbiValue{.constant_bool = true},
-            'F' => return AbiValue{.constant_bool = false},
+            'I' => return AbiValue{ .constant_int = try p.demangleConstantInt() },
+            'T' => return AbiValue{ .constant_bool = true },
+            'F' => return AbiValue{ .constant_bool = false },
             'r' => {
                 const child = try p.arena.create(AbiValue);
                 child.* = try p.demangleAbiValue();
-                return AbiValue{.typed_runtime_value = child};
+                return AbiValue{ .typed_runtime_value = child };
             },
             else => return error.InvalidMangledName,
         }
@@ -226,8 +226,8 @@ const Parser = struct {
             arg.* = try p.demangleAbiValue();
         }
         return KernelConfig{
-            .kernel = .{.name = try p.arena.dupe(u8, name)},
-            .overload = .{.args = args},
+            .kernel = .{ .name = try p.arena.dupe(u8, name) },
+            .overload = .{ .args = args },
         };
     }
 
@@ -291,7 +291,7 @@ const MangleKernelConfigFormatter = std.fmt.Formatter(mangleKernelConfigFormatte
 
 pub fn mangleKernelArrayName(comptime k: Kernel, comptime Args: type) []const u8 {
     const config = KernelConfig.init(k, Args);
-    return std.fmt.comptimePrint("{s}{}", .{kernel_array_sym_prefix, MangleKernelConfigFormatter{.data = config}});
+    return std.fmt.comptimePrint("{s}{}", .{ kernel_array_sym_prefix, MangleKernelConfigFormatter{ .data = config } });
 }
 
 pub fn mangleKernelDefinitionName(comptime k: Kernel, comptime overload: Overload) []const u8 {
@@ -299,7 +299,7 @@ pub fn mangleKernelDefinitionName(comptime k: Kernel, comptime overload: Overloa
         .kernel = k,
         .overload = overload,
     };
-    return std.fmt.comptimePrint("{s}{}", .{kernel_declaration_sym_prefix, MangleKernelConfigFormatter{.data = config}});
+    return std.fmt.comptimePrint("{s}{}", .{ kernel_declaration_sym_prefix, MangleKernelConfigFormatter{ .data = config } });
 }
 
 fn testMangle(expected: []const u8, abi_type: AbiValue) !void {
@@ -312,18 +312,18 @@ fn testMangle(expected: []const u8, abi_type: AbiValue) !void {
 fn testMangleInt(expected: []const u8, int: anytype) !void {
     var value = try std.math.big.int.Managed.initSet(std.testing.allocator, int);
     defer value.deinit();
-    const abi_ci = .{.constant_int = value.toConst()};
+    const abi_ci = .{ .constant_int = value.toConst() };
     try testMangle(expected, abi_ci);
 }
 
 test "AbiValue - mangle" {
-    try testMangle("u8", .{.int = .{.signedness = .unsigned, .bits = 8}});
-    try testMangle("f16", .{.float = .{.bits = 16}});
-    const abi_i32 = .{.int = .{.signedness = .signed, .bits = 32}};
+    try testMangle("u8", .{ .int = .{ .signedness = .unsigned, .bits = 8 } });
+    try testMangle("f16", .{ .float = .{ .bits = 16 } });
+    const abi_i32 = .{ .int = .{ .signedness = .signed, .bits = 32 } };
     try testMangle("i32", abi_i32);
-    const abi_a5i32 = .{.array = .{.len = 5, .child = &abi_i32}};
+    const abi_a5i32 = .{ .array = .{ .len = 5, .child = &abi_i32 } };
     try testMangle("a5i32", abi_a5i32);
-    const abi_pa5i32 = .{.pointer = .{.size = .one, .is_const = true, .alignment = 4, .child = &abi_a5i32}};
+    const abi_pa5i32 = .{ .pointer = .{ .size = .one, .is_const = true, .alignment = 4, .child = &abi_a5i32 } };
     try testMangle("pc4a5i32", abi_pa5i32);
 
     try testMangleInt("I1234ABCDp", 0x1234ABCD);
@@ -331,7 +331,7 @@ test "AbiValue - mangle" {
     try testMangleInt("I0p", 0x0);
     try testMangleInt("I10000000000000000p", 0x10000000000000000);
 
-    try testMangle("T", .{.constant_bool = true});
+    try testMangle("T", .{ .constant_bool = true });
 }
 
 fn testDemangle(expected: AbiValue, mangled: []const u8) !void {
@@ -349,23 +349,23 @@ fn testDemangle(expected: AbiValue, mangled: []const u8) !void {
 fn testDemangleInt(expected: anytype, mangled: []const u8) !void {
     var value = try std.math.big.int.Managed.initSet(std.testing.allocator, expected);
     defer value.deinit();
-    const abi_ci = .{.constant_int = value.toConst()};
+    const abi_ci = .{ .constant_int = value.toConst() };
     try testDemangle(abi_ci, mangled);
 }
 
 test "AbiValue - demangle" {
-    try testDemangle(.{.int = .{.signedness = .unsigned, .bits = 32}}, "u32");
-    try testDemangle(.{.float = .{.bits = 64}}, "f64");
-    const abi_i16 = .{.int = .{.signedness = .signed, .bits = 16}};
+    try testDemangle(.{ .int = .{ .signedness = .unsigned, .bits = 32 } }, "u32");
+    try testDemangle(.{ .float = .{ .bits = 64 } }, "f64");
+    const abi_i16 = .{ .int = .{ .signedness = .signed, .bits = 16 } };
     try testDemangle(abi_i16, "i16");
-    const abi_a987i16 = .{.array = .{.len = 987, .child = &abi_i16}};
+    const abi_a987i16 = .{ .array = .{ .len = 987, .child = &abi_i16 } };
     try testDemangle(abi_a987i16, "a987i16");
-    const abi_pa987i16 = .{.pointer = .{.size = .slice, .is_const = false, .alignment = 123, .child = &abi_a987i16}};
+    const abi_pa987i16 = .{ .pointer = .{ .size = .slice, .is_const = false, .alignment = 123, .child = &abi_a987i16 } };
     try testDemangle(abi_pa987i16, "Sm123a987i16");
 
     try testDemangleInt(0x11223344, "I11223344p");
     try testDemangleInt(-0xAAAABBBBCCCCDDDDEEEEF, "IAAAABBBBCCCCDDDDEEEEFn");
     try testDemangleInt(0x0, "I00000000000000000000000000000n");
 
-    try testDemangle(.{.constant_bool = false}, "F");
+    try testDemangle(.{ .constant_bool = false }, "F");
 }
