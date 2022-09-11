@@ -2,14 +2,6 @@
 //! it is advised to not use any functionality outside this path.
 
 const std = @import("std");
-const zhc = @import("zhc.zig");
-
-pub const elf = @import("build/elf.zig");
-const KernelConfig = zhc.abi.KernelConfig;
-
-const CrossTarget = std.zig.CrossTarget;
-const native_endian = @import("builtin").target.cpu.arch.endian();
-
 const build = std.build;
 const Builder = build.Builder;
 const FileSource = build.FileSource;
@@ -17,6 +9,13 @@ const Step = build.Step;
 const LibExeObjStep = build.LibExeObjStep;
 const OptionsStep = build.OptionsStep;
 const Pkg = build.Pkg;
+const CrossTarget = std.zig.CrossTarget;
+
+const zhc = @import("zhc.zig");
+const KernelConfig = zhc.abi.KernelConfig;
+
+pub const elf = @import("build/elf.zig");
+pub const amdgpu = @import("build/amdgpu.zig");
 
 const zhc_pkg_name = "zhc";
 const zhc_options_pkg_name = "zhc_build_options";
@@ -65,6 +64,7 @@ fn configure(
 /// elf file is to be linked with a host executable or library.
 const DeviceLibStep = struct {
     step: Step,
+    b: *Builder,
     device_lib: *LibExeObjStep,
     configs_step: *KernelConfigExtractStep,
 
@@ -84,7 +84,8 @@ const DeviceLibStep = struct {
         self.* = .{
             // TODO: Better name?
             .step = Step.init(.custom, "extract-kernels", b.allocator, make),
-            .device_lib = b.addStaticLibrarySource("device-code", root_src),
+            .b = b,
+            .device_lib = b.addObjectSource("device-code", root_src),
             .configs_step = configs_step,
         };
         self.step.dependOn(&self.device_lib.step);
@@ -100,8 +101,20 @@ const DeviceLibStep = struct {
 
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(DeviceLibStep, "step", step);
-        std.debug.print("finished compiling device-code, kernels would be extracted here\n", .{});
-        _ = self;
+        const target_info = try std.zig.system.NativeTargetInfo.detect(self.device_lib.target);
+
+        const device_object_path = self.device_lib.getOutputSource().getPath(self.b);
+        if (self.b.verbose) {
+            std.log.debug("Extracting kernels from {s}", .{device_object_path});
+        }
+
+        const device_object = try elf.readBinary(self.b.allocator, std.fs.cwd(), device_object_path);
+
+        // TODO: Also use some kind of platform thingy here...
+        switch (target_info.target.cpu.arch) {
+            .amdgcn => try amdgpu.extractKernels(self.b.allocator, device_object),
+            else => return error.UnsupportedPlatform,
+        }
     }
 };
 
@@ -149,16 +162,8 @@ const KernelConfigExtractStep = struct {
         // TODO: Something with the cache to see if this work is at all neccesary?
         const self = @fieldParentPtr(KernelConfigExtractStep, "step", step);
         const object_path = self.object_src.getPath(self.b);
-        const elf_bytes = try std.fs.cwd().readFileAllocOptions(
-            self.b.allocator,
-            object_path,
-            std.math.maxInt(usize),
-            1 * 1024 * 1024,
-            @alignOf(std.elf.Elf64_Ehdr),
-            null,
-        );
-
-        self.configs = try elf.parseKernelConfigs(self.b.allocator, elf_bytes);
+        const binary = try elf.readBinary(self.b.allocator, std.fs.cwd(), object_path);
+        self.configs = try elf.parseKernelConfigs(self.b.allocator, binary);
 
         if (self.b.verbose) {
             std.log.info("Found {} kernel config(s):", .{self.configs.count()});

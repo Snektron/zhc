@@ -8,10 +8,9 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace) nore
     while (true) {}
 }
 
-fn testKernel(comptime T: type, a: *T, b: anytype, doit: i32) callconv(zhc.kernel_cc) void {
+fn testKernel(comptime T: type, a: *T, b: T, c: anytype) callconv(zhc.kernel_cc) void {
     zhc.compilation.deviceOnly();
-    if (doit)
-        a.* = b;
+    a.* = b + c;
 }
 
 pub const test_kernel = zhc.kernel("testKernel");

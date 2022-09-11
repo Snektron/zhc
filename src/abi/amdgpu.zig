@@ -80,8 +80,7 @@ fn EntryPoint(comptime func: anytype, comptime overload: Overload) type {
             kernel_args: anytype,
         ) void {
             if (overload_index == overload.args.len) {
-                @call( // if you see a compile error here it means your kernel arguments are invalid
-                    .{ .modifier = .always_inline }, func, kernel_args);
+                @call(.{ .modifier = .always_inline }, func, kernel_args); // if you see a compile error here it means your kernel arguments are invalid
                 return;
             }
 
