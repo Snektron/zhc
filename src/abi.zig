@@ -16,11 +16,8 @@ pub const mangling = @import("abi/mangling.zig");
 pub const amdgpu = @import("abi/amdgpu.zig");
 
 /// Platform-specific ABI functions for the current platform.
-/// TODO: Should this switch be done using the CPU arch? Perhaps a "platform" notion should be
-///   introduced.
-const native = switch (builtin.cpu.arch) {
-    .amdgcn => amdgpu,
-    else => @compileError("Unsupported device archtecture " ++ @tagName(builtin.cpu.arch)),
+const native = switch (zhc.compilation.platform) {
+    .amdgpu => amdgpu,
 };
 
 pub const exportEntryPoint = native.exportEntryPoint;

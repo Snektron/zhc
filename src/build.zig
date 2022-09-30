@@ -20,6 +20,8 @@ pub const amdgpu = @import("build/amdgpu.zig");
 
 const zhc_pkg_name = "zhc";
 const zhc_options_pkg_name = "zhc_build_options";
+const zhc_platform_options_pkg_name = "zhc_platform_build_options";
+
 /// The path to the main file of this library.
 const zhc_pkg_path = getZhcPkgPath();
 
@@ -30,7 +32,9 @@ fn getZhcPkgPath() []const u8 {
 
 /// Get the configured ZHC package for host compilations
 pub fn getHostPkg(b: *Builder) Pkg {
-    return configure(b, getCommonZhcOptions(b, .host));
+    const opts = getCommonZhcOptions(b, .host);
+    const platform_opts = getPlatformZhcOptions(b, null);
+    return configure(b, opts, platform_opts);
 }
 
 fn getCommonZhcOptions(b: *Builder, side: zhc.compilation.Side) *OptionsStep {
@@ -43,14 +47,27 @@ fn getCommonZhcOptions(b: *Builder, side: zhc.compilation.Side) *OptionsStep {
     return opts;
 }
 
+fn getPlatformZhcOptions(b: *Builder, platform: ?zhc.platform.Kind) *OptionsStep {
+    const opts = b.addOptions();
+    const out = opts.contents.writer();
+
+    if (platform) |p| {
+        out.print("pub const platform = .{s};\n", .{@tagName(p)}) catch unreachable;
+    }
+
+    return opts;
+}
+
 /// Configure ZHC for compilation. `opts` is an `OptionsStep` that provides
 /// `zhc_build_options`.
 fn configure(
     b: *Builder,
     opts: *OptionsStep,
+    platform_opts: *OptionsStep,
 ) Pkg {
     const deps = b.allocator.dupe(Pkg, &.{
         opts.getPackage(zhc_options_pkg_name),
+        platform_opts.getPackage(zhc_platform_options_pkg_name),
     }) catch unreachable;
 
     return .{
@@ -66,6 +83,7 @@ fn configure(
 const DeviceLibStep = struct {
     step: Step,
     b: *Builder,
+    platform: zhc.platform.Kind,
     device_lib: *LibExeObjStep,
     configs_step: *KernelConfigExtractStep,
 
@@ -73,6 +91,8 @@ const DeviceLibStep = struct {
         b: *Builder,
         /// The main source file for this device lib.
         root_src: FileSource,
+        /// The kind of platform this device library is being compiled for.
+        platform: zhc.platform.Kind,
         /// The device architecture to compile for.
         // TODO: Perhaps this should be passed via setTarget, but then some form of
         // default needs to be chosen.
@@ -86,12 +106,15 @@ const DeviceLibStep = struct {
             // TODO: Better name?
             .step = Step.init(.custom, "extract-kernels", b.allocator, make),
             .b = b,
+            .platform = platform,
             .device_lib = b.addSharedLibrarySource("device-code", root_src, .unversioned),
             .configs_step = configs_step,
         };
 
+        const platform_opts = getPlatformZhcOptions(b, platform);
+
         self.device_lib.setTarget(device_target);
-        self.device_lib.addPackage(configure(b, configs_step.device_options_step));
+        self.device_lib.addPackage(configure(b, configs_step.device_options_step, platform_opts));
         self.device_lib.linker_allow_shlib_undefined = false;
         self.device_lib.bundle_compiler_rt = true;
         self.device_lib.force_pic = true;
@@ -122,8 +145,8 @@ const DeviceLibStep = struct {
         // TODO: Also use some kind of platform thingy here...
         // TODO: This step step is not really the right place for this, as multiple device libraries need
         // to be bundled.
-        switch (target_info.target.cpu.arch) {
-            .amdgcn => {
+        switch (self.platform) {
+            .amdgpu => {
                 // HIP fat binaries need this host entry, even though its not supposed to have anu code...
                 const host_entry = offload_bundle.Entry{
                     .offload_kind = .host,
@@ -146,17 +169,28 @@ const DeviceLibStep = struct {
 
                 try offload_bundle.bundle(file.writer(), bundle);
             },
-            else => return error.UnsupportedPlatform,
         }
     }
 };
 
-pub fn addDeviceLib(self: *Builder, root_src: []const u8, device_target: CrossTarget, configs: *KernelConfigExtractStep) *DeviceLibStep {
-    return addDeviceLibSource(self, .{ .path = root_src }, device_target, configs);
+pub fn addDeviceLib(
+    self: *Builder,
+    root_src: []const u8,
+    platform: zhc.platform.Kind,
+    device_target: CrossTarget,
+    configs: *KernelConfigExtractStep
+) *DeviceLibStep {
+    return addDeviceLibSource(self, .{ .path = root_src }, platform, device_target, configs);
 }
 
-pub fn addDeviceLibSource(builder: *Builder, root_src: FileSource, device_target: CrossTarget, configs: *KernelConfigExtractStep) *DeviceLibStep {
-    return DeviceLibStep.create(builder, root_src, device_target, configs);
+pub fn addDeviceLibSource(
+    builder: *Builder,
+    root_src: FileSource,
+    platform: zhc.platform.Kind,
+    device_target: CrossTarget,
+    configs: *KernelConfigExtractStep
+) *DeviceLibStep {
+    return DeviceLibStep.create(builder, root_src, platform, device_target, configs);
 }
 
 /// This step is used to extract which kernels in a particular binary are present.

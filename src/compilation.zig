@@ -5,6 +5,8 @@ const std = @import("std");
 
 const zhc = @import("zhc.zig");
 const build_options = @import("zhc_build_options");
+const platform_build_options = @import("zhc_platform_build_options");
+
 const builtin = @import("builtin");
 
 /// Indicates a side of compilation.
@@ -22,6 +24,13 @@ pub const Side = enum {
 
 /// The side code is currently being compiled for.
 pub const side: Side = build_options.side;
+
+/// The platform which we are currently compiling device code for.
+/// Only available on the device side, on host this value is dynamic.
+pub const platform: zhc.platform.Kind = blk: {
+    deviceOnly();
+    break :blk platform_build_options.platform;
+};
 
 /// The configurions of kernels to launch.
 pub const launch_configurations = blk: {

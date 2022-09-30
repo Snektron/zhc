@@ -20,6 +20,7 @@ pub fn build(b: *std.build.Builder) void {
     const example_devlib = zhc.build.addDeviceLib(
         b,
         "example/kernel.zig",
+        .amdgpu,
         device_target,
         example_configs,
     );
