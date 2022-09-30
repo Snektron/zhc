@@ -6,7 +6,7 @@ pub fn build(b: *std.build.Builder) void {
     const host_target = b.standardTargetOptions(.{});
     const device_target = std.zig.CrossTarget.parse(.{
         .arch_os_abi = "amdgcn-amdhsa",
-        .cpu_features = "gfx908",
+        .cpu_features = "gfx908-xnack",
     }) catch unreachable;
 
     const example = b.addExecutable("zhc-example", "example/main.zig");

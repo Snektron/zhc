@@ -15,6 +15,7 @@ const zhc = @import("zhc.zig");
 const KernelConfig = zhc.abi.KernelConfig;
 
 pub const elf = @import("build/elf.zig");
+pub const offload_bundle = @import("build/offload_bundle.zig");
 pub const amdgpu = @import("build/amdgpu.zig");
 
 const zhc_pkg_name = "zhc";
@@ -85,13 +86,20 @@ const DeviceLibStep = struct {
             // TODO: Better name?
             .step = Step.init(.custom, "extract-kernels", b.allocator, make),
             .b = b,
-            .device_lib = b.addObjectSource("device-code", root_src),
+            .device_lib = b.addSharedLibrarySource("device-code", root_src, .unversioned),
             .configs_step = configs_step,
         };
-        self.step.dependOn(&self.device_lib.step);
+
         self.device_lib.setTarget(device_target);
         self.device_lib.addPackage(configure(b, configs_step.device_options_step));
+        self.device_lib.linker_allow_shlib_undefined = false;
+        self.device_lib.bundle_compiler_rt = true;
+        self.device_lib.force_pic = true;
+        self.device_lib.install();
+
+        self.step.dependOn(&self.device_lib.step);
         self.step.dependOn(&self.configs_step.step);
+
         return self;
     }
 
@@ -101,6 +109,7 @@ const DeviceLibStep = struct {
 
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(DeviceLibStep, "step", step);
+        const host_target_info = try std.zig.system.NativeTargetInfo.detect(.{});
         const target_info = try std.zig.system.NativeTargetInfo.detect(self.device_lib.target);
 
         const device_object_path = self.device_lib.getOutputSource().getPath(self.b);
@@ -111,8 +120,32 @@ const DeviceLibStep = struct {
         const device_object = try elf.readBinary(self.b.allocator, std.fs.cwd(), device_object_path);
 
         // TODO: Also use some kind of platform thingy here...
+        // TODO: This step step is not really the right place for this, as multiple device libraries need
+        // to be bundled.
         switch (target_info.target.cpu.arch) {
-            .amdgcn => try amdgpu.extractKernels(self.b.allocator, device_object),
+            .amdgcn => {
+                // HIP fat binaries need this host entry, even though its not supposed to have anu code...
+                const host_entry = offload_bundle.Entry{
+                    .offload_kind = .host,
+                    .target = host_target_info.target, // TODO: Pass CPU target
+                    .code_object = &.{},
+                };
+
+                const device_entry = offload_bundle.Entry{
+                    .offload_kind = .hipv4,
+                    .target = target_info.target,
+                    .code_object = device_object,
+                };
+
+                const bundle = offload_bundle.Bundle{
+                    .entries = &.{host_entry, device_entry},
+                };
+
+                var file = try std.fs.cwd().createFile("test.fb", .{});
+                defer file.close();
+
+                try offload_bundle.bundle(file.writer(), bundle);
+            },
             else => return error.UnsupportedPlatform,
         }
     }
