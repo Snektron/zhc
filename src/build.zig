@@ -77,122 +77,6 @@ fn configure(
     };
 }
 
-/// This step is used to compile a "device-library" step for a particular architecture.
-/// The Zig code associated to this step is compiled in "device-mode", and the produced
-/// elf file is to be linked with a host executable or library.
-const DeviceLibStep = struct {
-    step: Step,
-    b: *Builder,
-    platform: zhc.platform.Kind,
-    device_lib: *LibExeObjStep,
-    configs_step: *KernelConfigExtractStep,
-
-    fn create(
-        b: *Builder,
-        /// The main source file for this device lib.
-        root_src: FileSource,
-        /// The kind of platform this device library is being compiled for.
-        platform: zhc.platform.Kind,
-        /// The device architecture to compile for.
-        // TODO: Perhaps this should be passed via setTarget, but then some form of
-        // default needs to be chosen.
-        device_target: CrossTarget,
-        /// Step which resolves the kernel configurations that this device library
-        /// should compile.
-        configs_step: *KernelConfigExtractStep,
-    ) *DeviceLibStep {
-        const self = b.allocator.create(DeviceLibStep) catch unreachable;
-        self.* = .{
-            // TODO: Better name?
-            .step = Step.init(.custom, "extract-kernels", b.allocator, make),
-            .b = b,
-            .platform = platform,
-            .device_lib = b.addSharedLibrarySource("device-code", root_src, .unversioned),
-            .configs_step = configs_step,
-        };
-
-        const platform_opts = getPlatformZhcOptions(b, platform);
-
-        self.device_lib.setTarget(device_target);
-        self.device_lib.addPackage(configure(b, configs_step.device_options_step, platform_opts));
-        self.device_lib.linker_allow_shlib_undefined = false;
-        self.device_lib.bundle_compiler_rt = true;
-        self.device_lib.force_pic = true;
-        self.device_lib.install();
-
-        self.step.dependOn(&self.device_lib.step);
-        self.step.dependOn(&self.configs_step.step);
-
-        return self;
-    }
-
-    pub fn setBuildMode(self: *DeviceLibStep, mode: std.builtin.Mode) void {
-        self.device_lib.setBuildMode(mode);
-    }
-
-    fn make(step: *Step) !void {
-        const self = @fieldParentPtr(DeviceLibStep, "step", step);
-        const host_target_info = try std.zig.system.NativeTargetInfo.detect(.{});
-        const target_info = try std.zig.system.NativeTargetInfo.detect(self.device_lib.target);
-
-        const device_object_path = self.device_lib.getOutputSource().getPath(self.b);
-        if (self.b.verbose) {
-            std.log.debug("Extracting kernels from {s}", .{device_object_path});
-        }
-
-        const device_object = try elf.readBinary(self.b.allocator, std.fs.cwd(), device_object_path);
-
-        // TODO: Also use some kind of platform thingy here...
-        // TODO: This step step is not really the right place for this, as multiple device libraries need
-        // to be bundled.
-        switch (self.platform) {
-            .amdgpu => {
-                // HIP fat binaries need this host entry, even though its not supposed to have anu code...
-                const host_entry = offload_bundle.Entry{
-                    .offload_kind = .host,
-                    .target = host_target_info.target, // TODO: Pass CPU target
-                    .code_object = &.{},
-                };
-
-                const device_entry = offload_bundle.Entry{
-                    .offload_kind = .hipv4,
-                    .target = target_info.target,
-                    .code_object = device_object,
-                };
-
-                const bundle = offload_bundle.Bundle{
-                    .entries = &.{host_entry, device_entry},
-                };
-
-                var file = try std.fs.cwd().createFile("test.fb", .{});
-                defer file.close();
-
-                try offload_bundle.bundle(file.writer(), bundle);
-            },
-        }
-    }
-};
-
-pub fn addDeviceLib(
-    self: *Builder,
-    root_src: []const u8,
-    platform: zhc.platform.Kind,
-    device_target: CrossTarget,
-    configs: *KernelConfigExtractStep
-) *DeviceLibStep {
-    return addDeviceLibSource(self, .{ .path = root_src }, platform, device_target, configs);
-}
-
-pub fn addDeviceLibSource(
-    builder: *Builder,
-    root_src: FileSource,
-    platform: zhc.platform.Kind,
-    device_target: CrossTarget,
-    configs: *KernelConfigExtractStep
-) *DeviceLibStep {
-    return DeviceLibStep.create(builder, root_src, platform, device_target, configs);
-}
-
 /// This step is used to extract which kernels in a particular binary are present.
 const KernelConfigExtractStep = struct {
     step: Step,
@@ -269,3 +153,168 @@ pub fn extractKernelConfigs(builder: *Builder, object_step: *LibExeObjStep) *Ker
 pub fn extractKernelConfigsSource(builder: *Builder, object_src: FileSource) *KernelConfigExtractStep {
     return KernelConfigExtractStep.create(builder, object_src);
 }
+
+/// This step represents a compilation of a "kernel-object": An object file that contains the
+/// device machine code for a set of kernels. Zig code in a device object is compiled in
+/// device-mode for a particular architecture.
+const DeviceObjectStep = struct {
+    step: Step,
+    b: *Builder,
+    platform: zhc.platform.Kind,
+    object: *LibExeObjStep,
+    configs_step: *KernelConfigExtractStep,
+
+    fn create(
+        b: *Builder,
+        /// The main source file for this device lib.
+        root_src: FileSource,
+        /// The kind of platform this device library is being compiled for.
+        platform: zhc.platform.Kind,
+        /// Step which resolves the kernel configurations that this device library
+        /// should compile.
+        configs_step: *KernelConfigExtractStep,
+    ) *DeviceObjectStep {
+        const self = b.allocator.create(DeviceObjectStep) catch unreachable;
+        self.* = .{
+            // TODO: Better name?
+            .step = Step.init(.custom, "kernel-object", b.allocator, make),
+            .b = b,
+            .platform = platform,
+            .object = b.addSharedLibrarySource("device-code", root_src, .unversioned),
+            .configs_step = configs_step,
+        };
+
+        const platform_opts = getPlatformZhcOptions(b, platform);
+        const zhc_pkg = configure(b, configs_step.device_options_step, platform_opts);
+
+        self.object.addPackage(zhc_pkg);
+        self.object.linker_allow_shlib_undefined = false;
+        self.object.bundle_compiler_rt = true;
+        self.object.force_pic = true;
+
+        // TODO: These dependencies might not be correct.
+        self.step.dependOn(&self.object.step);
+        self.step.dependOn(&self.configs_step.step);
+
+        return self;
+    }
+
+    pub fn setBuildMode(self: *DeviceObjectStep, mode: std.builtin.Mode) void {
+        self.object.setBuildMode(mode);
+    }
+
+    pub fn setTarget(self: *DeviceObjectStep, target: CrossTarget) void {
+        self.object.setTarget(target);
+    }
+
+    fn make(step: *Step) !void {
+        const self = @fieldParentPtr(DeviceObjectStep, "step", step);
+        _ = self;
+
+        // Do we actually need this step? Can we not just do with a function that
+        // returns a regular LibExeObjStep?
+
+        // That might still need a target, but we can hack that into by creating a separate step that
+        // detects gpus and adds it there.
+    }
+};
+
+pub fn addDeviceObject(
+    builder: *Builder,
+    root_src: []const u8,
+    platform: zhc.platform.Kind,
+    configs: *KernelConfigExtractStep
+) *DeviceObjectStep {
+    return addDeviceObjectSource(builder, .{ .path = root_src }, platform, configs);
+}
+
+pub fn addDeviceObjectSource(
+    builder: *Builder,
+    root_src: FileSource,
+    platform: zhc.platform.Kind,
+    configs: *KernelConfigExtractStep
+) *DeviceObjectStep {
+    return DeviceObjectStep.create(builder, root_src, platform, configs);
+}
+
+/// The OffloadLibraryStep produces a library containing all the device code, that can be linked with
+/// a host executable that contains ZHC kernel calls.
+pub const OffloadLibraryStep = struct {
+    step: Step,
+    b: *Builder,
+    host_target: CrossTarget = .{},
+    device_objects: std.ArrayListUnmanaged(*DeviceObjectStep) = .{},
+
+    pub fn create(b: *Builder) *OffloadLibraryStep {
+        const self = b.allocator.create(OffloadLibraryStep) catch unreachable;
+        self.* = .{
+            .step = Step.init(.custom, "offload-library", b.allocator, make),
+            .b = b,
+        };
+        return self;
+    }
+
+    /// Set the host target that this library should be compiled for.
+    pub fn setTarget(self: *OffloadLibraryStep, target: CrossTarget) void {
+        self.host_target = target;
+    }
+
+    /// Add a device object to this offload library.
+    pub fn addKernels(self: *OffloadLibraryStep, o: *DeviceObjectStep) void {
+        self.device_objects.append(self.b.allocator, o) catch unreachable;
+        self.step.dependOn(&o.step);
+    }
+
+    fn make(step: *Step) !void {
+        const self = @fieldParentPtr(OffloadLibraryStep, "step", step);
+
+        const cwd = std.fs.cwd();
+        const host_target_info = try std.zig.system.NativeTargetInfo.detect(self.host_target);
+
+        // TODO: Order self.device_objects by platfork so that we can process all objects
+        // for a particular platform together.
+        // For example, all amdgpu objects need to be bundled in the same offload bundle.
+
+        // TODO: OffloadBundleStep?
+        {
+            var entries = std.ArrayList(offload_bundle.Entry).init(self.b.allocator);
+            // HIP fat binaries need this host entry, even though its not supposed to have any code...
+            entries.append(.{
+                .offload_kind = .host,
+                .target = host_target_info.target,
+                .code_object = &.{},
+            }) catch unreachable;
+
+            for (self.device_objects.items) |device_object| {
+                std.debug.assert(device_object.platform == .amdgpu); // TODO: Other platforms.
+                const device_target_info = try std.zig.system.NativeTargetInfo.detect(device_object.object.target);
+
+                const device_object_path = device_object.object.getOutputSource().getPath(self.b);
+                const device_binary = elf.readBinary(self.b.allocator, cwd, device_object_path) catch unreachable;
+
+                entries.append(.{
+                    .offload_kind = .hipv4,
+                    .target = device_target_info.target,
+                    .code_object = device_binary,
+                }) catch unreachable;
+            }
+
+            // TODO: Generate internally and then link.
+            var file = try std.fs.cwd().createFile("test.fb", .{});
+            defer file.close();
+
+            try offload_bundle.bundle(file.writer(), .{
+                .entries = entries.items,
+            });
+        }
+    }
+};
+
+pub fn addOffloadLibrary(builder: *Builder) *OffloadLibraryStep {
+    return addOffloadLibrarySource(builder);
+}
+
+pub fn addOffloadLibrarySource(builder: *Builder) *OffloadLibraryStep {
+    return OffloadLibraryStep.create(builder);
+}
+

@@ -6,7 +6,7 @@ pub fn build(b: *std.build.Builder) void {
     const host_target = b.standardTargetOptions(.{});
     const device_target = std.zig.CrossTarget.parse(.{
         .arch_os_abi = "amdgcn-amdhsa",
-        .cpu_features = "gfx908-xnack",
+        .cpu_features = "gfx908",
     }) catch unreachable;
 
     const example = b.addExecutable("zhc-example", "example/main.zig");
@@ -17,15 +17,19 @@ pub fn build(b: *std.build.Builder) void {
 
     const example_configs = zhc.build.extractKernelConfigs(b, example);
 
-    const example_devlib = zhc.build.addDeviceLib(
+    const example_gfx803 = zhc.build.addDeviceObject(
         b,
         "example/kernel.zig",
-        .amdgpu,
-        device_target,
+        .amdgpu, // TODO: Maybe move to setPlatform function?
         example_configs,
     );
-    example_devlib.setBuildMode(mode);
-    b.default_step.dependOn(&example_devlib.step);
+    example_gfx803.setBuildMode(mode);
+    example_gfx803.setTarget(device_target);
+
+    const example_offload = zhc.build.addOffloadLibrary(b);
+    example_offload.addKernels(example_gfx803);
+    example_offload.setTarget(host_target);
+    b.default_step.dependOn(&example_offload.step);
 
     const tests = b.addTest("src/zhc.zig");
     tests.setBuildMode(mode);
