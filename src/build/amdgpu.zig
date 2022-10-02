@@ -85,8 +85,8 @@ pub fn buildHipFatBinary(
     try cwd.makePath(dirname);
 
     const bundle_path = try join2(b.allocator, dirname, "offload_bundle.hipfb");
-    const hipfb_zig_path = try join2(b.allocator, dirname, "hip_fatbin.zig");
-    const hipfb_bin_path = try join2(b.allocator, dirname, "hip_fatbin.o");
+    const hipfb_zig_path = try join2(b.allocator, dirname, "hipfatbin.zig");
+    const hipfb_bin_path = try join2(b.allocator, dirname, "hipfatbin.o");
 
     // Place the bundle in the "work" dir.
     try cwd.writeFile(bundle_path, bundle);
@@ -102,6 +102,8 @@ pub fn buildHipFatBinary(
         hipfb_zig_path,
         "--main-pkg-path",
         dirname,
+        "-target",
+        try host_target.zigTriple(b.allocator),
         try std.fmt.allocPrint(b.allocator, "-femit-bin={s}", .{hipfb_bin_path}),
     });
 

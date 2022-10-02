@@ -19,12 +19,6 @@ pub const platform = @import("platform.zig");
 ///   We want to call user kernels with inline from the entry point wrapper anyway.
 pub const kernel_cc = CallingConvention.Inline;
 
-/// The *actual* calling convention that exported kernel functions should have. The proper
-/// value depends on the device architecture and OS.
-pub const real_kernel_cc: CallingConvention = switch (compilation.platform) {
-    .amdgpu => .AmdgpuKernel,
-};
-
 pub const Kernel = struct {
     name: []const u8,
 };
