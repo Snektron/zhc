@@ -11,12 +11,14 @@ const OptionsStep = build.OptionsStep;
 const Pkg = build.Pkg;
 const CrossTarget = std.zig.CrossTarget;
 
-const zhc = @import("zhc.zig");
-const KernelConfig = zhc.abi.KernelConfig;
-
 pub const elf = @import("build/elf.zig");
 pub const offload_bundle = @import("build/offload_bundle.zig");
+pub const hip_fatbin = @import("build/hip_fatbin.zig");
 pub const amdgpu = @import("build/amdgpu.zig");
+
+const zhc = @import("zhc.zig");
+const KernelConfig = zhc.abi.KernelConfig;
+const HipFatBinStep = hip_fatbin.HipFatBinStep;
 
 const zhc_pkg_name = "zhc";
 const zhc_options_pkg_name = "zhc_build_options";
@@ -157,7 +159,7 @@ pub fn extractKernelConfigsSource(builder: *Builder, object_src: FileSource) *Ke
 /// This step represents a compilation of a "kernel-object": An object file that contains the
 /// device machine code for a set of kernels. Zig code in a device object is compiled in
 /// device-mode for a particular architecture.
-const DeviceObjectStep = struct {
+pub const DeviceObjectStep = struct {
     step: Step,
     b: *Builder,
     platform: zhc.platform.Kind,
@@ -243,9 +245,9 @@ pub const OffloadLibraryStep = struct {
     step: Step,
     b: *Builder,
     host_target: CrossTarget = .{},
-    device_objects: std.ArrayListUnmanaged(*DeviceObjectStep) = .{},
+    hip_fatbin_step: ?*HipFatBinStep = null,
 
-    pub fn create(b: *Builder) *OffloadLibraryStep {
+    fn create(b: *Builder) *OffloadLibraryStep {
         const self = b.allocator.create(OffloadLibraryStep) catch unreachable;
         self.* = .{
             .step = Step.init(.custom, "offload-library", b.allocator, make),
@@ -257,56 +259,34 @@ pub const OffloadLibraryStep = struct {
     /// Set the host target that this library should be compiled for.
     pub fn setTarget(self: *OffloadLibraryStep, target: CrossTarget) void {
         self.host_target = target;
+        if (self.hip_fatbin_step) |hip_fatbin_step| {
+            hip_fatbin_step.setHostTarget(target);
+        }
     }
 
     /// Add a device object to this offload library.
-    pub fn addKernels(self: *OffloadLibraryStep, o: *DeviceObjectStep) void {
-        self.device_objects.append(self.b.allocator, o) catch unreachable;
-        self.step.dependOn(&o.step);
+    pub fn addKernels(self: *OffloadLibraryStep, device_object: *DeviceObjectStep) void {
+        // TODO: If we want to autodetect then this value might not be available at this time,
+        // and so it should be deferred onto the make step?
+        // Or we can just force the user to give the platform up front, but provide a function to detect it.
+        switch (device_object.platform) {
+            .amdgpu => self.addAmdgpuKernels(device_object),
+        }
+    }
+
+    fn addAmdgpuKernels(self: *OffloadLibraryStep, device_object: *DeviceObjectStep) void {
+        if (self.hip_fatbin_step == null) {
+            self.hip_fatbin_step = HipFatBinStep.create(self.b);
+            self.hip_fatbin_step.?.setHostTarget(self.host_target);
+            self.step.dependOn(&self.hip_fatbin_step.?.step);
+        }
+
+        self.hip_fatbin_step.?.add(device_object);
     }
 
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(OffloadLibraryStep, "step", step);
-
-        const cwd = std.fs.cwd();
-        const host_target_info = try std.zig.system.NativeTargetInfo.detect(self.host_target);
-
-        // TODO: Order self.device_objects by platfork so that we can process all objects
-        // for a particular platform together.
-        // For example, all amdgpu objects need to be bundled in the same offload bundle.
-
-        // TODO: OffloadBundleStep?
-        {
-            var entries = std.ArrayList(offload_bundle.Entry).init(self.b.allocator);
-            // HIP fat binaries need this host entry, even though its not supposed to have any code...
-            entries.append(.{
-                .offload_kind = .host,
-                .target = host_target_info.target,
-                .code_object = &.{},
-            }) catch unreachable;
-
-            for (self.device_objects.items) |device_object| {
-                std.debug.assert(device_object.platform == .amdgpu); // TODO: Other platforms.
-                const device_target_info = try std.zig.system.NativeTargetInfo.detect(device_object.object.target);
-
-                const device_object_path = device_object.object.getOutputSource().getPath(self.b);
-                const device_binary = elf.readBinary(self.b.allocator, cwd, device_object_path) catch unreachable;
-
-                entries.append(.{
-                    .offload_kind = .hipv4,
-                    .target = device_target_info.target,
-                    .code_object = device_binary,
-                }) catch unreachable;
-            }
-
-            // TODO: Generate internally and then link.
-            var file = try std.fs.cwd().createFile("test.fb", .{});
-            defer file.close();
-
-            try offload_bundle.bundle(file.writer(), .{
-                .entries = entries.items,
-            });
-        }
+        _ = self;
     }
 };
 

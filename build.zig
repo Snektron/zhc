@@ -20,7 +20,7 @@ pub fn build(b: *std.build.Builder) void {
     const example_gfx803 = zhc.build.addDeviceObject(
         b,
         "example/kernel.zig",
-        .amdgpu, // TODO: Maybe move to setPlatform function?
+        .amdgpu, // TODO: Maybe move to setPlatform function? Then we can detect it if not specified.
         example_configs,
     );
     example_gfx803.setBuildMode(mode);
