@@ -163,6 +163,10 @@ pub const DeviceObjectStep = struct {
     platform: zhc.platform.Kind,
     object: *LibExeObjStep,
     configs_step: *KernelConfigExtractStep,
+    /// The object file read into memory. It might need to be processed multiple times
+    /// and loading it into memory in this step saves doing that multiple times.
+    /// This field becomes valid after make().
+    object_data: []align(elf.elf_align) const u8,
 
     fn create(
         b: *Builder,
@@ -182,6 +186,7 @@ pub const DeviceObjectStep = struct {
             .platform = platform,
             .object = b.addSharedLibrarySource("device-code", root_src, .unversioned),
             .configs_step = configs_step,
+            .object_data = undefined,
         };
 
         const platform_opts = getPlatformZhcOptions(b, platform);
@@ -209,13 +214,12 @@ pub const DeviceObjectStep = struct {
 
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(DeviceObjectStep, "step", step);
-        _ = self;
 
-        // Do we actually need this step? Can we not just do with a function that
-        // returns a regular LibExeObjStep?
+        const object_path = self.object.getOutputSource().getPath(self.b);
+        self.object_data = try zhc.build.elf.readBinary(self.b.allocator, std.fs.cwd(), object_path);
 
-        // That might still need a target, but we can hack that into by creating a separate step that
-        // detects gpus and adds it there.
+        // TODO: Check that all requested kernels are actually present.
+        // TODO: Generate some metadata for this device object that is to be embedded in the offload library.
     }
 };
 

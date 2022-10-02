@@ -7,6 +7,9 @@ const Allocator = std.mem.Allocator;
 const zhc = @import("../zhc.zig");
 const offload_bundle = zhc.build.offload_bundle;
 const DeviceObjectStep = zhc.build.DeviceObjectStep;
+const elf_align = zhc.build.elf.elf_align;
+const ElfParser = zhc.build.elf.ElfParser;
+const msgpack = zhc.util.msgpack;
 
 // TODO: hipFatBinSegment/__hip_fatbin_wrapper
 // TODO: Less hardcoding
@@ -16,7 +19,6 @@ const fat_bin_template =
 ;
 
 fn createOffloadBundle(b: *build.Builder, host_target: std.Target, device_objects: []const *DeviceObjectStep) ![]const u8 {
-    const cwd = std.fs.cwd();
     var entries = std.ArrayList(offload_bundle.Entry).init(b.allocator);
 
     // Hip fat binaries need this empty host target for some reason.
@@ -29,14 +31,12 @@ fn createOffloadBundle(b: *build.Builder, host_target: std.Target, device_object
     for (device_objects) |device_object| {
         std.debug.assert(device_object.platform == .amdgpu);
 
-        const code_object_path = device_object.object.getOutputSource().getPath(b);
-        const code_object = zhc.build.elf.readBinary(b.allocator, cwd, code_object_path) catch unreachable;
         const code_object_target_info = try std.zig.system.NativeTargetInfo.detect(device_object.object.target);
 
         entries.append(.{
             .offload_kind = .hipv4,
             .target = code_object_target_info.target,
-            .code_object = code_object,
+            .code_object = device_object.object_data,
         }) catch unreachable;
     }
 
