@@ -1,138 +1,109 @@
 //! This file deals with the amdgpu specifics of the build process.
 
 const std = @import("std");
+const build = std.build;
 const Allocator = std.mem.Allocator;
 
 const zhc = @import("../zhc.zig");
-const msgpack = zhc.util.msgpack;
-const elf_align = zhc.build.elf.elf_align;
-const ElfParser = zhc.build.elf.ElfParser;
+const offload_bundle = zhc.build.offload_bundle;
+const DeviceObjectStep = zhc.build.DeviceObjectStep;
 
-const NT_AMDGPU_METADATA = 32;
+// TODO: hipFatBinSegment/__hip_fatbin_wrapper
+// TODO: Less hardcoding
+const fat_bin_template =
+    \\export const __hip_fatbin align(4096) linksection(".hip_fatbin") = @embedFile("{s}").*;
+    \\
+;
 
-/// This structure is encoded in msgpack format in AMDGPU code objects. It is valid for
-/// code objects V3, V4 and V5.
-const CodeObjectV345Metadata = struct {
-    @"amdhsa.version": [2]u64, // 1.0 for V3, 1.1 for V4, 1.2 for V5.
-    @"amdhsa.printf": ?[]const []const u8 = null,
-    @"amdhsa.target": ?[]const u8 = null, // Only present in V4+
-    @"amdhsa.kernels": []const Kernel = &.{},
+fn createOffloadBundle(b: *build.Builder, host_target: std.Target, device_objects: []const *DeviceObjectStep) ![]const u8 {
+    const cwd = std.fs.cwd();
+    var entries = std.ArrayList(offload_bundle.Entry).init(b.allocator);
 
-    const Kernel = struct {
-        @".name": []const u8,
-        @".symbol": []const u8,
-        @".language": ?[]const u8 = null,
-        @".language_version": ?[2]u64 = null,
-        @".args": []const Arg = &.{},
-        @".reqd_workgroup_size": ?[3]u64 = null,
-        @".workgroup_size_limit": ?[3]u64 = null,
-        @".vec_type_hint": ?[]const u8 = null,
-        @".device_enqueue_symbol": ?[]const u8 = null,
-        @".kernarg_segment_size": u64,
-        @".group_segment_fixed_size": u64,
-        @".private_segment_fixed_size": u64,
-        @".kernarg_segment_align": u64,
-        @".uses_dynamic_stack": bool = false,
-        @".wavefront_size": u64,
-        @".sgpr_count": u64,
-        @".vgpr_count": u64,
-        @".max_flat_workgroup_size": u64,
-        @".sgpr_spill_count": u64 = 0,
-        @".vgpr_spill_count": u64 = 0,
-        @".kind": Kind = .normal,
+    // Hip fat binaries need this empty host target for some reason.
+    entries.append(.{
+        .offload_kind = .host,
+        .target = host_target,
+        .code_object = &.{},
+    }) catch unreachable;
 
-        const Kind = enum {
-            normal,
-            init,
-            fini,
-        };
-    };
+    for (device_objects) |device_object| {
+        std.debug.assert(device_object.platform == .amdgpu);
 
-    const Arg = struct {
-        @".name": ?[]const u8 = null,
-        @".type_name": ?[]const u8 = null,
-        @".size": u64,
-        @".offset": u64,
-        @".value_kind": ValueKind,
-        @".value_type": ?[]const u8 = null,
-        @".pointee_align": ?u64 = null,
-        @".address_space": ?AddressSpace = null,
-        @".access": ?Access = null,
-        @".actual_access": ?Access = null,
-        @".is_const": bool = false,
-        @".is_restrict": bool = false,
-        @".is_volatile": bool = false,
-        @".is_pipe": bool = false,
+        const code_object_path = device_object.object.getOutputSource().getPath(b);
+        const code_object = zhc.build.elf.readBinary(b.allocator, cwd, code_object_path) catch unreachable;
+        const code_object_target_info = try std.zig.system.NativeTargetInfo.detect(device_object.object.target);
 
-        const ValueKind = enum {
-            by_value,
-            global_buffer,
-            dynamic_shared_buffer,
-            sampler,
-            image,
-            pipe,
-            queue,
-            hidden_global_offset_x,
-            hidden_global_offset_y,
-            hidden_none,
-            hidden_printf_buffer,
-            hidden_hostcall_buffer,
-            hidden_default_queue,
-            hidden_completion_action,
-            hidden_multigrid_sync_arg,
-            hidden_block_count_x,
-            hidden_block_count_y,
-            hidden_block_count_z,
-            hidden_group_size_x,
-            hidden_group_size_y,
-            hidden_group_size_z,
-            hidden_remainder_x,
-            hidden_remainder_y,
-            hidden_remainder_z,
-            hidden_grid_dims,
-            hidden_heap_v1,
-            hidden_private_base,
-            hidden_shared_base,
-            hidden_queue_ptr,
-        };
-
-        const AddressSpace = enum {
-            private,
-            global,
-            constant,
-            local,
-            generic,
-            region,
-        };
-
-        const Access = enum {
-            read_only,
-            write_only,
-            read_write,
-        };
-    };
-};
-
-pub fn extractKernels(arena: Allocator, binary: []align(elf_align) const u8) !void {
-    var elf_parser = try ElfParser.init(binary);
-    if (elf_parser.header.machine != .AMDGPU) {
-        // Expected amdgpu kernel binary to have, well, the AMDGPU arch.
-        return error.InvalidElf;
+        entries.append(.{
+            .offload_kind = .hipv4,
+            .target = code_object_target_info.target,
+            .code_object = code_object,
+        }) catch unreachable;
     }
 
-    const metadata_pack = blk: {
-        // AMDGPU metadata is described in the .note section, with name "AMDGPU".
-        var it = try elf_parser.notesIterator();
-        while (it.next()) |note| {
-            if (!std.mem.eql(u8, note.name, "AMDGPU")) continue;
-            if (note.note_type != NT_AMDGPU_METADATA) return error.InvalidElf;
-            break :blk note.desc;
-        }
+    var out = std.ArrayList(u8).init(b.allocator);
+    try offload_bundle.bundle(out.writer(), .{
+        .entries = entries.items,
+    });
 
-        return error.InvalidElf; // elf AMDGPU note missing
-    };
+    return out.items;
+}
 
-    var metadata_parser = msgpack.Parser.init(arena, metadata_pack);
-    const metadata = try metadata_parser.parse(CodeObjectV345Metadata);
-    _ = metadata;
+fn hashToDirName(b: *build.Builder, contents: []const u8) ![]const u8 {
+    var hash = std.crypto.hash.blake2.Blake2b384.init(.{});
+    hash.update("Psb4YZnfgHJ38CNA");
+    hash.update(contents);
+    var digest: [48]u8 = undefined;
+    hash.final(&digest);
+    var base_dirname: [64]u8 = undefined;
+    _ = std.fs.base64_encoder.encode(&base_dirname, &digest);
+
+    const dir = b.pathFromRoot(
+        try std.fs.path.join(
+            b.allocator,
+            &[_][]const u8{ b.cache_root, "hipfb", &base_dirname },
+        ),
+    );
+
+    return dir;
+}
+
+fn join2(a: Allocator, dirname: []const u8, filename: []const u8) ![]const u8 {
+    return try std.fs.path.join(a, &.{ dirname, filename });
+}
+
+pub fn buildHipFatBinary(
+    b: *build.Builder,
+    host_target: std.Target,
+    device_objects: []const *DeviceObjectStep,
+) ![]const u8 {
+    // First, build an offload bundle using all the device objects.
+    const bundle = try createOffloadBundle(b, host_target, device_objects);
+
+    // Hash the bundle to get a "work" dir.
+    const dirname = try hashToDirName(b, bundle);
+    const cwd = std.fs.cwd();
+    try cwd.makePath(dirname);
+
+    const bundle_path = try join2(b.allocator, dirname, "offload_bundle.hipfb");
+    const hipfb_zig_path = try join2(b.allocator, dirname, "hip_fatbin.zig");
+    const hipfb_bin_path = try join2(b.allocator, dirname, "hip_fatbin.o");
+
+    // Place the bundle in the "work" dir.
+    try cwd.writeFile(bundle_path, bundle);
+
+    // Generate some Zig code that we can use to compile the bundle.
+    const code = try std.fmt.allocPrint(b.allocator, fat_bin_template, .{bundle_path});
+    try cwd.writeFile(hipfb_zig_path, code);
+
+    // Finally, build an object file from the generated zig file.
+    _ = try b.exec(&.{
+        b.zig_exe,
+        "build-obj",
+        hipfb_zig_path,
+        "--main-pkg-path",
+        dirname,
+        try std.fmt.allocPrint(b.allocator, "-femit-bin={s}", .{hipfb_bin_path}),
+    });
+
+    return hipfb_bin_path;
 }

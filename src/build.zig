@@ -13,12 +13,10 @@ const CrossTarget = std.zig.CrossTarget;
 
 pub const elf = @import("build/elf.zig");
 pub const offload_bundle = @import("build/offload_bundle.zig");
-pub const hip_fatbin = @import("build/hip_fatbin.zig");
 pub const amdgpu = @import("build/amdgpu.zig");
 
 const zhc = @import("zhc.zig");
 const KernelConfig = zhc.abi.KernelConfig;
-const HipFatBinStep = hip_fatbin.HipFatBinStep;
 
 const zhc_pkg_name = "zhc";
 const zhc_options_pkg_name = "zhc_build_options";
@@ -221,21 +219,11 @@ pub const DeviceObjectStep = struct {
     }
 };
 
-pub fn addDeviceObject(
-    builder: *Builder,
-    root_src: []const u8,
-    platform: zhc.platform.Kind,
-    configs: *KernelConfigExtractStep
-) *DeviceObjectStep {
+pub fn addDeviceObject(builder: *Builder, root_src: []const u8, platform: zhc.platform.Kind, configs: *KernelConfigExtractStep) *DeviceObjectStep {
     return addDeviceObjectSource(builder, .{ .path = root_src }, platform, configs);
 }
 
-pub fn addDeviceObjectSource(
-    builder: *Builder,
-    root_src: FileSource,
-    platform: zhc.platform.Kind,
-    configs: *KernelConfigExtractStep
-) *DeviceObjectStep {
+pub fn addDeviceObjectSource(builder: *Builder, root_src: FileSource, platform: zhc.platform.Kind, configs: *KernelConfigExtractStep) *DeviceObjectStep {
     return DeviceObjectStep.create(builder, root_src, platform, configs);
 }
 
@@ -245,7 +233,7 @@ pub const OffloadLibraryStep = struct {
     step: Step,
     b: *Builder,
     host_target: CrossTarget = .{},
-    hip_fatbin_step: ?*HipFatBinStep = null,
+    device_objects: std.ArrayListUnmanaged(*DeviceObjectStep) = .{},
 
     fn create(b: *Builder) *OffloadLibraryStep {
         const self = b.allocator.create(OffloadLibraryStep) catch unreachable;
@@ -259,34 +247,22 @@ pub const OffloadLibraryStep = struct {
     /// Set the host target that this library should be compiled for.
     pub fn setTarget(self: *OffloadLibraryStep, target: CrossTarget) void {
         self.host_target = target;
-        if (self.hip_fatbin_step) |hip_fatbin_step| {
-            hip_fatbin_step.setHostTarget(target);
-        }
     }
 
     /// Add a device object to this offload library.
     pub fn addKernels(self: *OffloadLibraryStep, device_object: *DeviceObjectStep) void {
-        // TODO: If we want to autodetect then this value might not be available at this time,
-        // and so it should be deferred onto the make step?
-        // Or we can just force the user to give the platform up front, but provide a function to detect it.
-        switch (device_object.platform) {
-            .amdgpu => self.addAmdgpuKernels(device_object),
-        }
-    }
-
-    fn addAmdgpuKernels(self: *OffloadLibraryStep, device_object: *DeviceObjectStep) void {
-        if (self.hip_fatbin_step == null) {
-            self.hip_fatbin_step = HipFatBinStep.create(self.b);
-            self.hip_fatbin_step.?.setHostTarget(self.host_target);
-            self.step.dependOn(&self.hip_fatbin_step.?.step);
-        }
-
-        self.hip_fatbin_step.?.add(device_object);
+        self.device_objects.append(self.b.allocator, device_object) catch unreachable;
+        self.step.dependOn(&device_object.step);
     }
 
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(OffloadLibraryStep, "step", step);
-        _ = self;
+
+        const host_target_info = try std.zig.system.NativeTargetInfo.detect(self.host_target);
+
+        // TODO: Split/order when more platforms are supported.
+        std.debug.assert(std.meta.fields(zhc.platform.Kind).len == 1);
+        _ = try amdgpu.buildHipFatBinary(self.b, host_target_info.target, self.device_objects.items);
     }
 };
 
@@ -297,4 +273,3 @@ pub fn addOffloadLibrary(builder: *Builder) *OffloadLibraryStep {
 pub fn addOffloadLibrarySource(builder: *Builder) *OffloadLibraryStep {
     return OffloadLibraryStep.create(builder);
 }
-

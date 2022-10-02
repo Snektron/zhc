@@ -3,12 +3,8 @@
 //! See also https://clang.llvm.org/docs/ClangOffloadBundler.html
 
 const std = @import("std");
-const build = std.build;
 const Allocator = std.mem.Allocator;
 const Target = std.Target;
-const CrossTarget = std.zig.CrossTarget;
-
-const zhc = @import("../zhc.zig");
 
 const clang_offload_bundle_magic = "__CLANG_OFFLOAD_BUNDLE__".*;
 
@@ -112,107 +108,3 @@ pub fn bundle(bundle_writer: anytype, offload_bundle: Bundle) !void {
         try writer.writeAll(entry.code_object);
     }
 }
-
-pub const OffloadBundleStep = struct {
-    pub const StepEntry = struct {
-        offload_kind: OffloadKind,
-        object: *build.LibExeObjStep,
-    };
-
-    step: build.Step,
-    b: *build.Builder,
-    host_target: ?CrossTarget = null,
-    entries: std.ArrayListUnmanaged(StepEntry) = .{},
-    generated_file: build.GeneratedFile,
-
-    pub fn create(b: *build.Builder) *OffloadBundleStep {
-        const self = b.allocator.create(OffloadBundleStep) catch unreachable;
-        self.* = .{
-            .step = build.Step.init(.custom, "hip-fat-binary", b.allocator, make),
-            .b = b,
-            .generated_file = .{
-                .step = &self.step,
-            },
-        };
-
-        return self;
-    }
-
-    pub fn add(self: *OffloadBundleStep, entry: StepEntry) void {
-        self.entries.append(self.b.allocator, entry) catch unreachable;
-        self.step.dependOn(&entry.object.step);
-    }
-
-    pub fn setHostTarget(self: *OffloadBundleStep, host_target: CrossTarget) void {
-        self.host_target = host_target;
-    }
-
-    pub fn getOutputSource(self: *build.LibExeObjStep) build.FileSource {
-        return build.FileSource{ .generated = &self.generated_file };
-    }
-
-    fn make(step: *build.Step) !void {
-        const self = @fieldParentPtr(OffloadBundleStep, "step", step);
-        const cwd = std.fs.cwd();
-
-        var entries = std.ArrayList(Entry).init(self.b.allocator);
-
-        // Hip fat binaries need this empty host target for some reason.
-        // Just add it here for ease.
-        if (self.host_target) |host_target| {
-            const host_target_info = try std.zig.system.NativeTargetInfo.detect(host_target);
-            entries.append(.{
-                .offload_kind = .host,
-                .target = host_target_info.target,
-                .code_object = &.{},
-            }) catch unreachable;
-        }
-
-        for (self.entries.items) |entry| {
-            const code_object_path = entry.object.getOutputSource().getPath(self.b);
-            const code_object = zhc.build.elf.readBinary(self.b.allocator, cwd, code_object_path) catch unreachable;
-            const code_object_target_info = try std.zig.system.NativeTargetInfo.detect(entry.object.target);
-
-            entries.append(.{
-                .offload_kind = entry.offload_kind,
-                .target = code_object_target_info.target,
-                .code_object = code_object,
-            }) catch unreachable;
-        }
-
-        var out = std.ArrayList(u8).init(self.b.allocator);
-        try bundle(out.writer(), .{
-            .entries = entries.items,
-        });
-
-        // Hash contents to generate a file name.
-        // Code taken from WriteFileStep.
-        // TODO: Make this part some build utility?
-        var hash = std.crypto.hash.blake2.Blake2b384.init(.{});
-        // Random bytes to make this process unique. Refresh when the implementation
-        // is modified in a non backwards compatible way.
-        hash.update("Psb4YZnfgHJ38CNA");
-        hash.update(out.items);
-        var digest: [48]u8 = undefined;
-        hash.final(&digest);
-        var filename: [64]u8 = undefined;
-        _ = std.fs.base64_encoder.encode(&filename, &digest);
-
-        const bundles_directory = self.b.pathFromRoot(
-            try std.fs.path.join(
-                self.b.allocator,
-                &[_][]const u8{ self.b.cache_root, "offload_bundles" },
-            ),
-        );
-        try cwd.makePath(bundles_directory);
-
-        const bundle_path = try std.fs.path.join(
-            self.b.allocator,
-            &[_][]const u8{ bundles_directory, &filename },
-        );
-
-        try cwd.writeFile(bundle_path, out.items);
-
-        self.generated_file.path = bundle_path;
-    }
-};
