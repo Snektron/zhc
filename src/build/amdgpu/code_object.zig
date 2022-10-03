@@ -1,8 +1,8 @@
-const NT_AMDGPU_METADATA = 32;
+pub const NT_AMDGPU_METADATA = 32;
 
 /// This structure is encoded in msgpack format in AMDGPU code objects. It is valid for
 /// code objects V3, V4 and V5.
-const CodeObjectV345Metadata = struct {
+pub const CodeObjectV345Metadata = struct {
     @"amdhsa.version": [2]u64, // 1.0 for V3, 1.1 for V4, 1.2 for V5.
     @"amdhsa.printf": ?[]const []const u8 = null,
     @"amdhsa.target": ?[]const u8 = null, // Only present in V4+
@@ -26,6 +26,7 @@ const CodeObjectV345Metadata = struct {
         @".wavefront_size": u64,
         @".sgpr_count": u64,
         @".vgpr_count": u64,
+        @".agpr_count": u64,
         @".max_flat_workgroup_size": u64,
         @".sgpr_spill_count": u64 = 0,
         @".vgpr_spill_count": u64 = 0,

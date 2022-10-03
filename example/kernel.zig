@@ -9,9 +9,9 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, retu
     while (true) {}
 }
 
-fn testKernel(a: *u64, b: u64, c: u64) callconv(zhc.kernel_cc) void {
+fn testKernel(comptime T: type, a: *T, b: T, c: T) callconv(zhc.kernel_cc) void {
     zhc.compilation.deviceOnly();
-    a.* = b / c;
+    a.* = b * c;
 }
 
 pub const test_kernel = zhc.kernel("testKernel");

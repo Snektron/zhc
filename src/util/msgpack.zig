@@ -223,7 +223,6 @@ pub const Parser = struct {
             }
 
             if (!found) {
-                std.debug.print("{s}\n", .{key});
                 return error.UnknownField;
             }
         }
@@ -232,7 +231,7 @@ pub const Parser = struct {
             if (!fields_seen[field_index]) {
                 if (field.default_value) |default_ptr| {
                     if (!field.is_comptime) {
-                        const default = @ptrCast(*const field.field_type, default_ptr).*;
+                        const default = @ptrCast(*const field.field_type, @alignCast(@alignOf(field.field_type), default_ptr)).*;
                         @field(result, field.name) = default;
                     }
                 } else {

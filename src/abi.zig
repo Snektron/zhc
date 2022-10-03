@@ -287,8 +287,6 @@ pub const AbiValue = union(enum) {
 pub const Overload = struct {
     args: []const AbiValue,
 
-    pub const Map = std.StringArrayHashMapUnmanaged([]const Overload);
-
     pub fn init(comptime Args: type) Overload {
         const args_info = @typeInfo(Args);
         if (args_info != .Struct or !args_info.Struct.is_tuple) {
@@ -401,6 +399,9 @@ pub const Overload = struct {
 
 /// Representation of an instance of a kernel.
 pub const KernelConfig = struct {
+    /// This map type can be used to map mangled kernel configs to a demangled version.
+    pub const MangleMap = std.StringArrayHashMapUnmanaged(KernelConfig);
+
     /// The kernel to which this configuration applies (the "launched" kernel).
     kernel: Kernel,
     /// Arguments with which it is launched. Note, this only contains the comptime-known
@@ -426,7 +427,7 @@ pub const KernelConfig = struct {
     ) !void {
         _ = fmt;
         _ = options;
-        try writer.print("{s}({}}", .{ self.kernel.name, self.overload });
+        try writer.print("{}({})", .{ std.zig.fmtId(self.kernel.name), self.overload });
     }
 };
 

@@ -10,7 +10,6 @@ const native_endian = @import("builtin").target.cpu.arch.endian();
 const Endian = std.builtin.Endian;
 
 const KernelConfig = zhc.abi.KernelConfig;
-const Overload = zhc.abi.Overload;
 
 pub const elf_align = @alignOf(elf.Elf64_Ehdr);
 
@@ -136,39 +135,34 @@ pub const ParseKernelConfigsError = error{
 /// Retrieve a list of kernel configurations that the binary needs. These are
 /// communicated by symbols starting with `__zhc_ka_ ` and followed by a mangled
 /// `zhc.abi.KernelConfig`. This function returns the full list of symbols.
-/// Note: `a` must be an arena allocator.
+/// The returned hash map is ordened by the value's kernel name so that kernels
+/// of the same name can be accessed sequentially.
+/// Note: `arena` must be an arena allocator.
 pub fn parseKernelConfigs(
     arena: Allocator,
     binary: []align(elf_align) const u8,
-) ParseKernelConfigsError!Overload.Map {
+) ParseKernelConfigsError!KernelConfig.MangleMap {
     var parser = try ElfParser.init(binary);
-    var overloads = std.StringArrayHashMap(std.ArrayListUnmanaged(Overload)).init(arena);
+    var configs = KernelConfig.MangleMap{};
 
     for (parser.symtab) |sym| {
         const name = std.mem.sliceTo(parser.strtab[sym.st_name..], 0);
-        if (!std.mem.startsWith(u8, name, zhc.abi.mangling.kernel_array_sym_prefix)) {
-            continue;
-        }
-
-        const config = try KernelConfig.demangle(arena, name[zhc.abi.mangling.kernel_array_sym_prefix.len..]);
-        const entry = try overloads.getOrPut(config.kernel.name);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .{};
-        }
-
-        // Note: Assume that the binary only contains _unique_ symbols.
-        // While elf technically allows it, we only emit the symbol for each once.
-        // TODO: Is that correct? What about libraries?
-        try entry.value_ptr.append(arena, config.overload);
+        const mangled_name = zhc.util.removePrefix(name, zhc.abi.mangling.kernel_array_sym_prefix) orelse continue;
+        const config = try KernelConfig.demangle(arena, mangled_name);
+        try configs.put(arena, mangled_name, config);
     }
 
-    var actual_overloads = Overload.Map{};
-    try actual_overloads.ensureTotalCapacity(arena, overloads.count());
+    const Cmp = struct {
+         kernel_configs: []KernelConfig,
 
-    var it = overloads.iterator();
-    while (it.next()) |entry| {
-        actual_overloads.putAssumeCapacityNoClobber(entry.key_ptr.*, entry.value_ptr.items);
-    }
+         pub fn lessThan(cmp: @This(), a_index: usize, b_index: usize) bool {
+             const a = cmp.kernel_configs[a_index];
+             const b = cmp.kernel_configs[b_index];
+             return std.mem.order(u8, a.kernel.name, b.kernel.name).compare(.lt);
+         }
+    };
 
-    return actual_overloads;
+    configs.sort(Cmp{.kernel_configs = configs.values()});
+
+    return configs;
 }
